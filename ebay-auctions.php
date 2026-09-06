@@ -237,52 +237,143 @@ function get_item_category($item_id, $auth_token) {
     return false;
 }
 
+/**
+ * Download an eBay image, attach it to a post, and set it as featured.
+ *
+ * Tries multiple eBay image sizes because a particular size may occasionally
+ * be unavailable even though another variant exists.
+ *
+ * @return int|WP_Error Attachment ID on success, WP_Error on failure.
+ */
 function set_featured_image_from_url($post_id, $image_url) {
-    if (empty($image_url)) {
-        error_log("No image URL provided for post ID $post_id");
-        return false;
+    $post_id   = absint($post_id);
+    $image_url = esc_url_raw(html_entity_decode(trim($image_url)));
+
+    if (!$post_id || empty($image_url)) {
+        return new WP_Error(
+            'invalid_ebay_image',
+            'A valid post ID and image URL are required.'
+        );
     }
 
-    $parsed_url = parse_url($image_url);
-    $base_url = preg_replace('/\/s-l\d+\.(jpg|png|jpeg|webp)$/i', '', $parsed_url['path']);
-    $image_url = 'https://i.ebayimg.com' . $base_url . '/s-l300.jpg';
-    
-    $image_data = @file_get_contents($image_url);
-    if ($image_data === false) {
-        error_log("Failed to download image from URL: $image_url for post ID $post_id");
-        return false;
+    $host = strtolower((string) wp_parse_url($image_url, PHP_URL_HOST));
+
+    if (
+        $host !== 'i.ebayimg.com' &&
+        !str_ends_with($host, '.ebayimg.com')
+    ) {
+        return new WP_Error(
+            'invalid_ebay_image_host',
+            'The supplied image is not hosted by eBay.'
+        );
     }
-    
-    $post = get_post($post_id);
-    $sanitized_title = sanitize_title($post->post_title);
-    $filename = $sanitized_title . '-' . $post_id . '.jpg';
-    
-    $upload_dir = wp_upload_dir();
-    $file_path = $upload_dir['path'] . '/' . $filename;
-    
-    file_put_contents($file_path, $image_data);
-    
-    $filetype = wp_check_filetype($filename, null);
-    $attachment = array(
-        'guid'           => $upload_dir['url'] . '/' . $filename,
-        'post_mime_type' => $filetype['type'],
-        'post_title'     => sanitize_file_name($filename),
-        'post_content'   => '',
-        'post_status'    => 'inherit',
+
+    require_once ABSPATH . 'wp-admin/includes/file.php';
+    require_once ABSPATH . 'wp-admin/includes/media.php';
+    require_once ABSPATH . 'wp-admin/includes/image.php';
+
+    $clean_url  = strtok($image_url, '?');
+    $candidates = [$image_url];
+
+    /*
+     * Convert URLs such as:
+     * /s-l140.jpg
+     *
+     * Into several possible eBay sizes.
+     */
+    if (
+        preg_match(
+            '~^(.*)/s-l\d+\.(jpe?g|png|webp)$~i',
+            $clean_url,
+            $matches
+        )
+    ) {
+        $base      = $matches[1];
+        $extension = strtolower($matches[2]);
+
+        $candidates = [
+            "{$base}/s-l1600.{$extension}",
+            "{$base}/s-l500.{$extension}",
+            $image_url,
+            "{$base}/s-l300.{$extension}",
+            "{$base}/s-l140.{$extension}",
+        ];
+    }
+
+    $candidates = array_values(array_unique($candidates));
+    $errors     = [];
+
+    foreach ($candidates as $candidate_url) {
+        $attachment_id = media_sideload_image(
+            $candidate_url,
+            $post_id,
+            get_the_title($post_id),
+            'id'
+        );
+
+        if (is_wp_error($attachment_id)) {
+            $errors[] = sprintf(
+                '%s: %s',
+                $candidate_url,
+                $attachment_id->get_error_message()
+            );
+
+            error_log(
+                sprintf(
+                    'eBay image download failed for post ID %d using %s: %s',
+                    $post_id,
+                    $candidate_url,
+                    $attachment_id->get_error_message()
+                )
+            );
+
+            continue;
+        }
+
+        $featured_image_set = set_post_thumbnail(
+            $post_id,
+            $attachment_id
+        );
+
+        if (!$featured_image_set) {
+            wp_delete_attachment($attachment_id, true);
+
+            $errors[] = sprintf(
+                '%s: downloaded but could not be set as featured image',
+                $candidate_url
+            );
+
+            continue;
+        }
+
+        update_post_meta(
+            $attachment_id,
+            '_ebay_source_image_url',
+            $image_url
+        );
+
+        update_post_meta(
+            $post_id,
+            '_ebay_featured_image_url',
+            $image_url
+        );
+
+        error_log(
+            sprintf(
+                'eBay featured image set for post ID %d. Attachment ID: %d. Downloaded from: %s',
+                $post_id,
+                $attachment_id,
+                $candidate_url
+            )
+        );
+
+        return $attachment_id;
+    }
+
+    return new WP_Error(
+        'ebay_image_download_failed',
+        'All eBay image variants failed: ' . implode(' | ', $errors)
     );
-    
-    $attach_id = wp_insert_attachment($attachment, $file_path, $post_id);
-    if ($attach_id === 0) {
-        error_log("Failed to insert attachment for image: $image_url for post ID $post_id");
-        return false;
-    }
-    
-    require_once(ABSPATH . 'wp-admin/includes/image.php');
-    $attach_data = wp_generate_attachment_metadata($attach_id, $file_path);
-    wp_update_attachment_metadata($attach_id, $attach_data);
-    
-    set_post_thumbnail($post_id, $attach_id);
-    return $attach_id;
 }
 
 function create_auction_posts() {

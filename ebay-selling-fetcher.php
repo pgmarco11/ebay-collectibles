@@ -273,12 +273,25 @@ function create_buy_it_now_posts() {
                 if (!empty($item['imageURL'])) {
                     $existing_image_url = get_post_meta($post_id, 'ebay_image_url', true);
                     if (!has_post_thumbnail($post_id) || $existing_image_url !== $item['imageURL']) {
-                        $attach_id = set_featured_image_from_url($post_id, $item['imageURL']);
-                        if ($attach_id) {
-                            error_log("Updated featured image for post ID {$post_id} from {$item['imageURL']}");
+
+                        $attach_id = set_featured_image_from_url(
+                            $post_id,
+                            $item['imageURL']
+                        );
+                        
+                        if (is_wp_error($attach_id)) {
+                            error_log(
+                                "Failed to set featured image for post ID {$post_id} " .
+                                "from {$item['imageURL']}: " .
+                                $attach_id->get_error_message()
+                            );
                         } else {
-                            error_log("Failed to set featured image for post ID {$post_id} from {$item['imageURL']}");
+                            error_log(
+                                "Updated featured image for post ID {$post_id} " .
+                                "using attachment ID {$attach_id}"
+                            );
                         }
+
                     } else {
                         error_log("Skipped image update for post ID {$post_id}: Image already exists and URL unchanged");
                     }
@@ -294,12 +307,25 @@ function create_buy_it_now_posts() {
                 error_log("Created post ID {$post_id} for eBay Buy It Now item {$item['itemId']}");
                 $created_count++;
                 if (!empty($item['imageURL'])) {
-                    $attach_id = set_featured_image_from_url($post_id, $item['imageURL']);
-                    if ($attach_id) {
-                        error_log("Set featured image for post ID {$post_id} from {$item['imageURL']}");
+
+                    $attach_id = set_featured_image_from_url(
+                        $post_id,
+                        $item['imageURL']
+                    );
+                    
+                    if (is_wp_error($attach_id)) {
+                        error_log(
+                            "Failed to set featured image for post ID {$post_id} " .
+                            "from {$item['imageURL']}: " .
+                            $attach_id->get_error_message()
+                        );
                     } else {
-                        error_log("Failed to set featured image for post ID {$post_id} from {$item['imageURL']}");
+                        error_log(
+                            "Set featured image for post ID {$post_id} " .
+                            "using attachment ID {$attach_id}"
+                        );
                     }
+
                 }
             }
         }
