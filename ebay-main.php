@@ -176,30 +176,48 @@ function get_ebay_oauth_token() {
 
 // Add basic styling
 function ebay_styles() {
-    wp_enqueue_style('ebay-styles', plugin_dir_url(__FILE__) . 'css/ebay-styles.css'); 
-    
+    $general_style_path = plugin_dir_path(__FILE__) . 'css/ebay-styles.css';
+    $item_style_path    = plugin_dir_path(__FILE__) . 'css/ebay-item.css';
+
+    wp_enqueue_style(
+        'ebay-styles',
+        plugin_dir_url(__FILE__) . 'css/ebay-styles.css',
+        [],
+        file_exists($general_style_path)
+            ? filemtime($general_style_path)
+            : '1.0'
+    );
+
     wp_enqueue_style(
         'ebay-item-style',
         plugin_dir_url(__FILE__) . 'css/ebay-item.css',
-        [],
-        '1.0'
+        ['ebay-styles'],
+        file_exists($item_style_path)
+            ? filemtime($item_style_path)
+            : '1.0'
     );
 }
 add_action('wp_enqueue_scripts', 'ebay_styles');
 
 function ebay_enqueue_scripts() {
+    $script_path = plugin_dir_path(__FILE__) . 'js/ebay-item.js';
+
     wp_enqueue_script(
         'ebay-item-js',
         plugin_dir_url(__FILE__) . 'js/ebay-item.js',
         ['jquery'],
-        '1.0',
+        file_exists($script_path) ? filemtime($script_path) : '1.1',
         true
     );
-    wp_localize_script('ebay-item-js', 'ebay_ajax_obj', [
-        'ajax_url' => admin_url('admin-ajax.php'),
-        'nonce' => wp_create_nonce('ebay_nonce'),
-    ]);
-    
+
+    wp_localize_script(
+        'ebay-item-js',
+        'ebay_ajax_obj',
+        [
+            'ajax_url' => admin_url('admin-ajax.php'),
+            'nonce'    => wp_create_nonce('ebay_nonce'),
+        ]
+    );
 }
 add_action('wp_enqueue_scripts', 'ebay_enqueue_scripts');
 

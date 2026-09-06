@@ -5,34 +5,332 @@ add_shortcode('ebay_item_form', 'render_ebay_item_form');
 function render_ebay_item_form() {
     ob_start();
     ?>
-    <div id="ebay-item-container">
-        <form id="ebay-item-form">
-            <input type="text" name="item_id" placeholder="eBay Item ID" required>    
-            <button type="button" id="check-item">Check Item</button>
-        </form>
-        <div id="item-details"></div> 
-    </div>
+    <section id="ebay-item-container" aria-labelledby="ebay-tool-heading">
+        <header class="ebay-tool-header">
+            <p class="ebay-tool-eyebrow">CollectibleSpot Marketplace Tool</p>
+            <h1 id="ebay-tool-heading">Find an eBay Item</h1>
+            <p class="ebay-tool-intro">
+                Search active eBay listings, choose the correct item, and inspect
+                its complete listing details.
+            </p>
+        </header>
+
+        <div class="ebay-tool-panel ebay-search-section">
+            <div class="ebay-panel-heading">
+                <span class="ebay-step-number" aria-hidden="true">1</span>
+
+                <div>
+                    <h2>Search eBay</h2>
+                    <p>Enter an item title, model number, or identifying keywords.</p>
+                </div>
+            </div>
+
+            <form id="ebay-title-search-form">
+                <label for="ebay-title-search">
+                    Item title or keywords
+                </label>
+
+                <div class="ebay-search-controls">
+                    <input
+                        type="search"
+                        id="ebay-title-search"
+                        name="search_query"
+                        placeholder="Example: 1988 Tiger Electronics Mega Man 2"
+                        minlength="3"
+                        autocomplete="off"
+                        enterkeyhint="search"
+                        required
+                    >
+
+                    <button type="submit" id="search-ebay">
+                        Search eBay
+                    </button>
+                </div>
+            </form>
+
+            <div
+                id="ebay-search-message"
+                role="status"
+                aria-live="polite"
+                aria-atomic="true"
+            ></div>
+
+            <div id="ebay-search-results"></div>
+        </div>
+
+        <div class="ebay-tool-divider">
+            <span>or enter an ID directly</span>
+        </div>
+
+        <div class="ebay-tool-panel ebay-check-section">
+            <div class="ebay-panel-heading">
+                <span class="ebay-step-number" aria-hidden="true">2</span>
+
+                <div>
+                    <h2>Check Item ID</h2>
+                    <p>Select a search result above or enter a numeric eBay Item ID.</p>
+                </div>
+            </div>
+
+            <form id="ebay-item-form">
+                <label class="screen-reader-text" for="ebay-item-id">
+                    eBay Item ID
+                </label>
+
+                <input
+                    type="text"
+                    id="ebay-item-id"
+                    name="item_id"
+                    inputmode="numeric"
+                    pattern="[0-9]+"
+                    placeholder="Enter eBay Item ID"
+                    required
+                >
+
+                <button type="submit" id="check-item">
+                    Check Item
+                </button>
+            </form>
+        </div>
+
+        <div
+            id="item-details"
+            aria-live="polite"
+        ></div>
+    </section>
+
     <script>
         document.addEventListener('DOMContentLoaded', function() {
             const params = new URLSearchParams(window.location.search);
             const itemId = params.get('item_id');
 
-            if (itemId) {
-                const input = document.querySelector('#ebay-item-form input[name="item_id"]');
-                const button = document.querySelector('#check-item');
+            if (!itemId || !/^\d+$/.test(itemId)) {
+                return;
+            }
 
-                if (input && button) {
-                    input.value = itemId;
+            const input = document.querySelector('#ebay-item-id');
+            const form  = document.querySelector('#ebay-item-form');
 
-                    // Give the DOM time to process the input, then simulate a click
-                    setTimeout(() => {
-                        button.click();
-                    }, 300); // adjust delay if needed
-                }
-            }         
+            if (input && form) {
+                input.value = itemId;
+
+                setTimeout(function() {
+                    form.requestSubmit();
+                }, 300);
+            }
         });
     </script>
-    <?php return ob_get_clean();
+    <?php
+
+    return ob_get_clean();
+}
+
+add_action(
+    'wp_ajax_search_ebay_items',
+    'handle_search_ebay_items'
+);
+
+add_action(
+    'wp_ajax_nopriv_search_ebay_items',
+    'handle_search_ebay_items'
+);
+
+/**
+ * Extract the numeric legacy listing ID returned inside a Browse API item ID.
+ *
+ * Browse IDs normally look like:
+ * v1|123456789012|0
+ */
+function ebay_get_legacy_item_id(array $item) {
+    $browse_item_id = isset($item['itemId'])
+        ? (string) $item['itemId']
+        : '';
+
+    if (
+        preg_match(
+            '/^v1\|(\d+)\|/',
+            $browse_item_id,
+            $matches
+        )
+    ) {
+        return $matches[1];
+    }
+
+    /*
+     * Fallback for any response that provides a numeric ID directly.
+     */
+    if (ctype_digit($browse_item_id)) {
+        return $browse_item_id;
+    }
+
+    /*
+     * Final fallback: extract the ID from the public item URL.
+     */
+    $item_url = isset($item['itemWebUrl'])
+        ? (string) $item['itemWebUrl']
+        : '';
+
+    if (
+        preg_match(
+            '~/(?:itm|p)/[^/?#]*/?(\d{9,})~',
+            $item_url,
+            $matches
+        )
+    ) {
+        return $matches[1];
+    }
+
+    return '';
+}
+
+function handle_search_ebay_items() {
+    check_ajax_referer(
+        'ebay_nonce',
+        'nonce'
+    );
+
+    $query = isset($_GET['query'])
+        ? sanitize_text_field(wp_unslash($_GET['query']))
+        : '';
+
+    if (mb_strlen($query) < 3) {
+        wp_send_json_error(
+            [
+                'message' => 'Enter at least three characters.',
+            ],
+            400
+        );
+    }
+
+    $access_token = get_transient('ebay_oauth_token')
+        ?: get_ebay_oauth_token();
+
+    if (!$access_token) {
+        wp_send_json_error(
+            [
+                'message' => 'Unable to obtain an eBay access token.',
+            ],
+            500
+        );
+    }
+
+    $url = add_query_arg(
+        [
+            'q'     => $query,
+            'limit' => 12,
+        ],
+        'https://api.ebay.com/buy/browse/v1/item_summary/search'
+    );
+
+    $response = wp_remote_get(
+        $url,
+        [
+            'headers' => [
+                'Authorization'                  => 'Bearer ' . $access_token,
+                'X-EBAY-C-MARKETPLACE-ID'       => 'EBAY_US',
+                'X-EBAY-C-ENDUSERCTX'           => 'contextualLocation=country=US',
+                'Accept'                        => 'application/json',
+            ],
+            'timeout' => 12,
+        ]
+    );
+
+    if (is_wp_error($response)) {
+        error_log(
+            'eBay title search failed: ' .
+            $response->get_error_message()
+        );
+
+        wp_send_json_error(
+            [
+                'message' => 'The eBay search request failed.',
+            ],
+            500
+        );
+    }
+
+    $status = wp_remote_retrieve_response_code($response);
+    $body   = json_decode(
+        wp_remote_retrieve_body($response),
+        true
+    );
+
+    if ($status !== 200) {
+        $message = $body['errors'][0]['message']
+            ?? 'eBay returned an unsuccessful response.';
+
+        error_log(
+            sprintf(
+                'eBay title search HTTP %d: %s',
+                $status,
+                $message
+            )
+        );
+
+        wp_send_json_error(
+            [
+                'message' => $message,
+            ],
+            $status
+        );
+    }
+
+    $results = [];
+
+    foreach ($body['itemSummaries'] ?? [] as $item) {
+        $legacy_item_id = ebay_get_legacy_item_id($item);
+
+        /*
+         * The existing GetItem request requires the numeric legacy ID.
+         */
+        if (!$legacy_item_id) {
+            continue;
+        }
+
+        $shipping_cost = '';
+
+        if (isset($item['shippingOptions'][0]['shippingCost']['value'])) {
+            $shipping_cost = (string)
+                $item['shippingOptions'][0]['shippingCost']['value'];
+        }
+
+        $results[] = [
+            'item_id'       => $legacy_item_id,
+            'title'         => sanitize_text_field(
+                $item['title'] ?? 'Untitled item'
+            ),
+            'image_url'     => esc_url_raw(
+                $item['image']['imageUrl'] ?? ''
+            ),
+            'item_url'      => esc_url_raw(
+                $item['itemWebUrl'] ?? ''
+            ),
+            'price'         => sanitize_text_field(
+                $item['price']['value'] ?? ''
+            ),
+            'currency'      => sanitize_text_field(
+                $item['price']['currency'] ?? 'USD'
+            ),
+            'condition'     => sanitize_text_field(
+                $item['condition'] ?? ''
+            ),
+            'shipping_cost' => sanitize_text_field(
+                $shipping_cost
+            ),
+            'buying_options' => array_values(
+                array_map(
+                    'sanitize_text_field',
+                    $item['buyingOptions'] ?? []
+                )
+            ),
+        ];
+    }
+
+    wp_send_json_success(
+        [
+            'items' => $results,
+        ]
+    );
 }
 
 // Handle AJAX request
