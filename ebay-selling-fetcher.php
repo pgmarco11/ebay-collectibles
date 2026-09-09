@@ -170,21 +170,28 @@ function create_buy_it_now_posts() {
             
             $root = isset($item_subcategories[0]) ? $item_subcategories[0] : '';          
             
-            if ($root === 'Collectibles') {                
+            if ($root === 'Collectibles') {
+                // Collectibles is already the WordPress parent.
                 array_shift($item_subcategories);
-            } elseif ($root === 'Sports Mem, Cards & Fan Shop') {                
+            } elseif ($root === 'Sports Mem, Cards & Fan Shop') {
                 array_shift($item_subcategories);
-                array_unshift($item_subcategories, 'Sports Mem, Cards & Fan Shop');
-            } elseif ($root === 'Movies & TV') {                
+                array_unshift(
+                    $item_subcategories,
+                    'Sports Cards & Memorabilia'
+                );
+            } elseif ($root === 'Movies & TV') {
                 array_shift($item_subcategories);
-                array_unshift($item_subcategories, 'Movies/DVD');
-            } else {                
-                array_unshift($item_subcategories, 'Other');
-            }
-            
-            if (empty($item_subcategories)) {
-                $item_subcategories = ['Other'];
-            }            
+                array_unshift(
+                    $item_subcategories,
+                    'Movies/DVD'
+                );
+            } elseif ($root === 'Toys & Hobbies') {
+                array_shift($item_subcategories);
+                array_unshift(
+                    $item_subcategories,
+                    'Toys & Hobbies'
+                );
+            }    
 
             $category_ids = [$parent_cat_id]; 
             $current_parent_id = $parent_cat_id;    

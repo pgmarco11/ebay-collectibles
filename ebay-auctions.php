@@ -526,27 +526,6 @@ function create_auction_posts() {
             $collectibles_cat_id = $collectibles_cat->term_id;
         }
 
-        // Ensure "Other Auctions" category with slug "other-auctions" exists under Auctions
-        $other_cat = get_term_by('slug', 'other-auctions', 'category');
-        if (!$other_cat) {
-            $other = wp_insert_term(
-                'Other Auctions',
-                'category',
-                [
-                    'slug'   => 'other-auctions',
-                    'parent' => $parent_cat_id,
-                ]
-            );
-
-            if (is_wp_error($other)) {
-                error_log("Error creating 'Other Auctions' category: " . $other->get_error_message());
-                return; // Stop if we can't create the category
-            }
-            $other_cat_id = $other['term_id'];
-        } else {
-            $other_cat_id = $other_cat->term_id;
-        }
-
         $created_posts = [];
         $updated_posts = [];
 
@@ -564,21 +543,31 @@ function create_auction_posts() {
             // Adjust category mapping using array_shift and array_unshift
             if ($subcat === 'Sports Mem, Cards & Fan Shop') {
                 array_shift($item_subcategories);
-                array_unshift($item_subcategories, 'Sports Mem, Cards & Fan Shop');
+                array_unshift(
+                    $item_subcategories,
+                    'Sports Cards & Memorabilia'
+                );
             } elseif ($subcat === 'Movies & TV') {
                 array_shift($item_subcategories);
-                array_unshift($item_subcategories, 'Movies/DVD');
-            } elseif ($subcat === 'Collectibles & Other Auctions' || stripos($subcat, 'Collectibles') !== false) {             
+                array_unshift(
+                    $item_subcategories,
+                    'Movies/DVD'
+                );
+            } elseif ($subcat === 'Toys & Hobbies') {
                 array_shift($item_subcategories);
-                array_unshift($item_subcategories, 'Collectibles');
-            } else {
-                // Non-collectibles go to "Other Auctions"
+                array_unshift(
+                    $item_subcategories,
+                    'Toys & Hobbies'
+                );
+            } elseif (
+                $subcat === 'Collectibles & Other Auctions' ||
+                stripos($subcat, 'Collectibles') !== false
+            ) {
                 array_shift($item_subcategories);
-                array_unshift($item_subcategories, 'Other Auctions');
-            }
-
-            if (empty($item_subcategories)) {
-                $item_subcategories = ['Other Auctions'];
+                array_unshift(
+                    $item_subcategories,
+                    'Collectibles'
+                );
             }
 
             // Check for existing category by name
@@ -588,9 +577,9 @@ function create_auction_posts() {
             foreach ($item_subcategories as $index => $subcategory) {
                 $subcat_name = trim($subcategory);
                 // Use specific slugs for Collectibles and Other Auctions
-                $subcat_slug = $subcat_name === 'Collectibles' ? 'collectibles-auctions' : 
-               ($subcat_name === 'Other Auctions' ? 'other-auctions' : 
-               sanitize_title($subcat_name));
+                $subcat_slug = $subcat_name === 'Collectibles'
+                    ? 'collectibles-auctions'
+                    : sanitize_title($subcat_name);
 
                 // Get all child terms under the current parent
                 $child_terms = get_terms([
@@ -601,9 +590,13 @@ function create_auction_posts() {
 
                 $matched_term_id = null;
                 foreach ($child_terms as $term) {
-                    if (sanitize_title($term->name) === $subcat_slug || 
-                        ($subcat_name === 'Collectibles' && $term->slug === 'collectibles-auctions') ||
-                        ($subcat_name === 'Other Auctions' && $term->slug === 'other-auctions')) {
+                    if (
+                        sanitize_title($term->name) === $subcat_slug ||
+                        (
+                            $subcat_name === 'Collectibles' &&
+                            $term->slug === 'collectibles-auctions'
+                        )
+                    ) {
                         $matched_term_id = $term->term_id;
                         break;
                     }
@@ -612,27 +605,32 @@ function create_auction_posts() {
                 if ($matched_term_id) {
                     $subcat_id = $matched_term_id; // Use existing term
                 } else {                    
-                    if ($subcat_name === 'Collectibles' && $current_parent_id === $other_cat_id) {
-                        $subcat_id = $collectibles_cat_id; // Use the top-level Collectibles category
-                    } else {
-                        // Create new term under the current parent
-                        $subcat = wp_insert_term(
-                            $subcat_name,
-                            'category',
-                            [
-                                'slug'   => $subcat_slug,
-                                'parent' => $current_parent_id,
-                            ]
+                    $subcat = wp_insert_term(
+                        $subcat_name,
+                        'category',
+                        [
+                            'slug'   => $subcat_slug,
+                            'parent' => $current_parent_id,
+                        ]
+                    );
+                    
+                    if (is_wp_error($subcat)) {
+                        error_log(
+                            "Failed to create subcategory '$subcat_name' " .
+                            "with slug '$subcat_slug' under parent ID " .
+                            "$current_parent_id: " .
+                            $subcat->get_error_message()
                         );
-
-                        if (is_wp_error($subcat)) {
-                            error_log("Failed to create subcategory '$subcat_name' with slug '$subcat_slug' under parent ID $current_parent_id: " . $subcat->get_error_message());
-                            echo '<div class="notice notice-error"><p>Failed to create subcategory: ' . esc_html($subcat->get_error_message()) . '</p></div>';
-                            continue;
-                        }
-
-                        $subcat_id = $subcat['term_id'];
+                    
+                        echo '<div class="notice notice-error"><p>' .
+                            'Failed to create subcategory: ' .
+                            esc_html($subcat->get_error_message()) .
+                            '</p></div>';
+                    
+                        continue;
                     }
+                    
+                    $subcat_id = $subcat['term_id'];
                 }
 
                 // Add to category list and move one level deeper
