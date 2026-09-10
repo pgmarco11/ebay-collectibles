@@ -185,6 +185,16 @@ function create_buy_it_now_posts() {
                     $item_subcategories,
                     'Movies/DVD'
                 );
+            } elseif (
+                $root === 'Music' &&
+                isset($item_subcategories[1]) &&
+                strcasecmp(
+                    $item_subcategories[1],
+                    'Vinyl Records'
+                ) === 0
+            ) {
+                // Remove "Music" but retain "Vinyl Records".
+                array_shift($item_subcategories);
             } elseif ($root === 'Toys & Hobbies') {
                 array_shift($item_subcategories);
                 array_unshift(

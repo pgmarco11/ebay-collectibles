@@ -411,7 +411,7 @@ function create_auction_posts() {
                     'taxonomy' => 'category',
                     'field' => 'term_id',
                     'terms' => $parent_cat_id,
-                    'include_children' => true, // Include subcategories like Collectibles, Other Auctions
+                    'include_children' => true, // Include all Auctions subcategories.
                 ]
             ]
         ]);
@@ -520,11 +520,8 @@ function create_auction_posts() {
             if (is_wp_error($collectibles)) {
                 error_log("Error creating 'Collectibles' category: " . $collectibles->get_error_message());
                 return; // Stop if we can't create the category
-            }
-            $collectibles_cat_id = $collectibles['term_id'];
-        } else {
-            $collectibles_cat_id = $collectibles_cat->term_id;
-        }
+            }            
+        } 
 
         $created_posts = [];
         $updated_posts = [];
@@ -553,6 +550,18 @@ function create_auction_posts() {
                     $item_subcategories,
                     'Movies/DVD'
                 );
+
+            } elseif (
+                $subcat === 'Music' &&
+                isset($item_subcategories[1]) &&
+                strcasecmp(
+                    $item_subcategories[1],
+                    'Vinyl Records'
+                ) === 0
+            ) {
+                // Remove "Music" but retain "Vinyl Records".
+                array_shift($item_subcategories);
+
             } elseif ($subcat === 'Toys & Hobbies') {
                 array_shift($item_subcategories);
                 array_unshift(
@@ -576,7 +585,7 @@ function create_auction_posts() {
 
             foreach ($item_subcategories as $index => $subcategory) {
                 $subcat_name = trim($subcategory);
-                // Use specific slugs for Collectibles and Other Auctions
+                // Use the dedicated auction slug for Collectibles.
                 $subcat_slug = $subcat_name === 'Collectibles'
                     ? 'collectibles-auctions'
                     : sanitize_title($subcat_name);
