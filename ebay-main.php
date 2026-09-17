@@ -57,6 +57,33 @@ function ebay_add_admin_menu() {
 }
 add_action('admin_menu', 'ebay_add_admin_menu');
 
+/**
+ * Convert an eBay image URL to a higher-resolution version.
+ */
+function get_high_res_ebay_image(
+    string $image_url,
+    string $target_size = 's-l500'
+): string {
+    if (
+        preg_match(
+            '#^https://i\.ebayimg\.com/images/.*/s-l\d+\.jpg$#i',
+            $image_url
+        )
+    ) {
+        $high_res_url = preg_replace(
+            '/s-l\d+/i',
+            $target_size,
+            $image_url
+        );
+
+        if (is_string($high_res_url)) {
+            return $high_res_url;
+        }
+    }
+
+    return $image_url;
+}
+
 function ebay_admin_page() {
     $message = '';
     if (isset($_POST['ebay_refresh'])) {
