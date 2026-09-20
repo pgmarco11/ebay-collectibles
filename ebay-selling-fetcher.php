@@ -141,19 +141,84 @@ function create_buy_it_now_posts() {
             echo '<div class="notice notice-warning"><p>No active Buy It Now items found.</p></div>';
             return;
         }
+      
+        /*
+        * Ensure we use the TOP-LEVEL Collectibles category.
+        *
+        * Do not look it up by name because Auctions also contains
+        * a child category named "Collectibles".
+        *
+        * Main collectibles:
+        * /collectibles/
+        *
+        * Auction collectibles:
+        * /auctions/collectibles-auctions/
+        */
+        $parent_cat = get_term_by(
+            'slug',
+            'collectibles',
+            'category'
+        );
 
-        // Ensure parent category "Collectibles" exists        
-        $parent_cat = get_term_by('name', 'Collectibles', 'category');
-        if (!$parent_cat) {
-            $created = wp_insert_term('Collectibles', 'category', ['slug' => 'collectibles']);
+        if (
+            !$parent_cat ||
+            is_wp_error($parent_cat)
+        ) {
+
+            $created = wp_insert_term(
+                'Collectibles',
+                'category',
+                [
+                    'slug'   => 'collectibles',
+                    'parent' => 0,
+                ]
+            );
+
             if (is_wp_error($created)) {
-                error_log("Error creating parent 'Collectibles' category: " . $created->get_error_message());
-                echo '<div class="notice notice-error"><p>Failed to create Collectibles category.</p></div>';
+
+                error_log(
+                    "Error creating top-level Collectibles category: " .
+                    $created->get_error_message()
+                );
+
+                echo '<div class="notice notice-error"><p>' .
+                    'Failed to locate or create the top-level ' .
+                    'Collectibles category.' .
+                    '</p></div>';
+
                 return;
             }
-            $parent_cat_id = $created['term_id'];
+
+            $parent_cat_id =
+                (int) $created['term_id'];
+
         } else {
-            $parent_cat_id = $parent_cat->term_id;
+
+            $parent_cat_id =
+                (int) $parent_cat->term_id;
+
+            /*
+            * Defensive check.
+            *
+            * The main Collectibles category must always be top-level.
+            */
+            if ((int) $parent_cat->parent !== 0) {
+
+                error_log(
+                    sprintf(
+                        'Invalid Collectibles parent category: ' .
+                        'term ID %d has parent %d.',
+                        $parent_cat_id,
+                        (int) $parent_cat->parent
+                    )
+                );
+
+                echo '<div class="notice notice-error"><p>' .
+                    'The main Collectibles category is not top-level.' .
+                    '</p></div>';
+
+                return;
+            }
         }
 
         $trashed_count = 0;
