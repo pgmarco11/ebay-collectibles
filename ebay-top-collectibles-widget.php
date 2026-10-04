@@ -21,6 +21,11 @@ function tcs_ebay_category_search_phrase($category) {
             continue;
         }
 
+        // Auctions is a grouping category, not an eBay search term.
+        if ($term->slug === 'auctions') {
+            continue;
+        }
+
         $names[] = html_entity_decode(
             $term->name,
             ENT_QUOTES,
@@ -148,7 +153,7 @@ XML;
 function fetch_ebay_ranked_items($category_slug, $limit = 10, $search_keywords = '') {
 
     $access_token = get_transient('ebay_oauth_token') ?: get_ebay_oauth_token();   
-    $cache_key = 'ebay_ranked_trail_v4_' . md5(
+    $cache_key = 'ebay_ranked_trail_v5_' . md5(
         wp_json_encode([
             $category_slug,
             absint($limit),
@@ -164,20 +169,29 @@ function fetch_ebay_ranked_items($category_slug, $limit = 10, $search_keywords =
         return false;
     }
 
-    $category_id = get_ebay_category_id_from_slug($category_slug);
-
-    if (!$category_id || !is_numeric($category_id)) {
-        error_log("eBay widget: Invalid category ID for slug: $category_slug");
-        return false;
-    }
     $future_iso = gmdate('Y-m-d\TH:i:s\Z', time() + 300);
     $base_url = 'https://api.ebay.com/buy/browse/v1/item_summary/search';
+
     $query_params = [
-        'category_ids' => $category_id,
-        'limit'        => 200,
-        'filter'       => "buyingOptions:{AUCTION},bidCount:[1..],price:[3..],priceCurrency:USD,itemEndDate:[{$future_iso}..]",
-        'sort'         => 'endingSoonest',
+        'limit'  => 200,
+        'filter' => "buyingOptions:{AUCTION},bidCount:[1..],price:[3..],priceCurrency:USD,itemEndDate:[{$future_iso}..]",
+        'sort'   => 'endingSoonest',
     ];
+
+    // An empty category phrase means auctions across eBay categories.
+    if ($category_slug !== '') {
+        $category_id = get_ebay_category_id_from_slug($category_slug);
+
+        if (!$category_id || !is_numeric($category_id)) {
+            error_log(
+                "eBay widget: Invalid category ID for phrase: $category_slug"
+            );
+            return false;
+        }
+
+        $query_params['category_ids'] = $category_id;
+    }
+
     if ($search_keywords !== '') {
         $query_params['q'] = $search_keywords;
     }
@@ -388,7 +402,14 @@ function render_ebay_top_widget($atts) {
         return '<p>Invalid category.</p>';
     }
 
-    if ($category_query === '') {
+    $is_auctions_root =
+    $category instanceof WP_Term &&
+    $category->taxonomy === 'category' &&
+    $category->slug === 'auctions';
+
+    if ($is_auctions_root) {
+        $category_query = '';
+    } elseif ($category_query === '') {
         return '<p>Invalid category.</p>';
     }
 
@@ -397,7 +418,8 @@ function render_ebay_top_widget($atts) {
     if (
         $category instanceof WP_Term &&
         $category->taxonomy === 'category' &&
-        (int) $category->parent > 0
+        (int) $category->parent > 0 &&
+        !$is_auctions_root
     ) {
         $search_keywords = html_entity_decode(
             $category->name,
@@ -425,7 +447,13 @@ function render_ebay_top_widget($atts) {
 
     <div class="ebay-top-widget">
 
-        <h2>Top eBay Auctions in <?php echo $category_name_esc; ?></h2>
+    <h2>
+        <?php
+        echo $is_auctions_root
+            ? 'Top eBay Auctions'
+            : 'Top eBay Auctions in ' . $category_name_esc;
+        ?>
+    </h2>
 
         <div class="ebay-tabs">
             <button class="ebay-tab active" data-tab="hot">🔥 Hot</button>
