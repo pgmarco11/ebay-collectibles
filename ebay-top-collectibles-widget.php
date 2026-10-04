@@ -153,7 +153,7 @@ XML;
 function fetch_ebay_ranked_items($category_slug, $limit = 10, $search_keywords = '') {
 
     $access_token = get_transient('ebay_oauth_token') ?: get_ebay_oauth_token();   
-    $cache_key = 'ebay_ranked_trail_v5_' . md5(
+    $cache_key = 'ebay_ranked_trail_v6_' . md5(
         wp_json_encode([
             $category_slug,
             absint($limit),
@@ -162,8 +162,26 @@ function fetch_ebay_ranked_items($category_slug, $limit = 10, $search_keywords =
     );
     $cached = get_transient($cache_key);
     if ($cached !== false && is_array($cached)) {
-        return $cached;
-    }    
+        $cutoff = time() + 300;
+    
+        foreach (['hot', 'bids', 'ending'] as $tab) {
+            $cached[$tab] = array_values(array_filter(
+                $cached[$tab] ?? [],
+                static function ($item) use ($cutoff) {
+                    return (int) ($item['endTimeUnix'] ?? 0) > $cutoff;
+                }
+            ));
+        }
+    
+        // Refresh the pool if expired items left a tab short.
+        if (
+            count($cached['hot']) >= $limit &&
+            count($cached['bids']) >= $limit &&
+            count($cached['ending']) >= $limit
+        ) {
+            return $cached;
+        }
+    }
     if (!$access_token) {
         error_log("eBay widget: No OAuth token available.");
         return false;
@@ -374,6 +392,128 @@ function ebay_time_left( $endTime ) {
         return 'N/A';
     }
 }
+function tcs_render_ebay_buy_it_now_widget(
+    $category_query,
+    $category_name,
+    $search_keywords = ''
+) {
+    $category_id = get_ebay_category_id_from_slug($category_query);
+    $token = get_transient('ebay_oauth_token') ?: get_ebay_oauth_token();
+
+    if (!$category_id || !$token) {
+        return '<p>Buy It Now items are temporarily unavailable.</p>';
+    }
+
+    $params = [
+        'category_ids' => $category_id,
+        'limit'        => 20,
+        'filter'       => 'buyingOptions:{FIXED_PRICE},price:[3..],priceCurrency:USD',
+    ];
+
+    if ($search_keywords !== '') {
+        $params['q'] = $search_keywords;
+    }
+
+    $response = wp_remote_get(
+        add_query_arg(
+            $params,
+            'https://api.ebay.com/buy/browse/v1/item_summary/search'
+        ),
+        [
+            'headers' => [
+                'Authorization'         => 'Bearer ' . $token,
+                'X-EBAY-C-MARKETPLACE-ID' => 'EBAY_US',
+                'Accept'                => 'application/json',
+            ],
+            'timeout' => 12,
+        ]
+    );
+
+    if (
+        is_wp_error($response) ||
+        wp_remote_retrieve_response_code($response) !== 200
+    ) {
+        return '<p>Buy It Now items are temporarily unavailable.</p>';
+    }
+
+    $body = json_decode(wp_remote_retrieve_body($response), true);
+
+    $items = array_values(array_filter(
+        $body['itemSummaries'] ?? [],
+        static function ($item) {
+            $options = $item['buyingOptions'] ?? [];
+            $end = !empty($item['itemEndDate'])
+                ? strtotime($item['itemEndDate'])
+                : false;
+
+            return
+                in_array('FIXED_PRICE', $options, true) &&
+                !in_array('AUCTION', $options, true) &&
+                (empty($item['itemEndDate']) || ($end && $end > time()));
+        }
+    ));
+
+    if (!$items) {
+        return '<p>No Buy It Now items found for this category.</p>';
+    }
+
+    ob_start();
+    ?>
+    <div class="ebay-top-widget">
+        <h2>
+            Top eBay Buy It Now Items in
+            <?php echo esc_html($category_name); ?>
+        </h2>
+
+        <div class="ebay-grid">
+            <?php foreach (array_slice($items, 0, 5) as $item): ?>
+                <div class="ebay-item">
+                    <?php if (!empty($item['image']['imageUrl'])): ?>
+                        <img
+                            src="<?php echo esc_url($item['image']['imageUrl']); ?>"
+                            alt="<?php echo esc_attr($item['title'] ?? ''); ?>"
+                            class="ebay-item-image"
+                            loading="lazy"
+                        >
+                    <?php endif; ?>
+
+                    <div class="ebay-item-details">
+                        <a
+                            href="<?php echo esc_url($item['itemWebUrl'] ?? ''); ?>"
+                            target="_blank"
+                            rel="noopener"
+                            class="ebay-item-title"
+                        >
+                            <?php
+                            echo esc_html(wp_trim_words(
+                                $item['title'] ?? '',
+                                10
+                            ));
+                            ?>
+                        </a>
+
+                        <p class="ebay-item-price">
+                            <?php
+                            echo esc_html(
+                                number_format(
+                                    (float) ($item['price']['value'] ?? 0),
+                                    2
+                                ) . ' ' .
+                                ($item['price']['currency'] ?? 'USD')
+                            );
+                            ?>
+                        </p>
+
+                        <p>Buy It Now</p>
+                    </div>
+                </div>
+            <?php endforeach; ?>
+        </div>
+    </div>
+    <?php
+
+    return ob_get_clean();
+}
 function render_ebay_top_widget($atts) {
 
     $atts = shortcode_atts([
@@ -427,7 +567,38 @@ function render_ebay_top_widget($atts) {
             get_bloginfo('charset') ?: 'UTF-8'
         );
     }
-    
+
+    $is_collectibles_branch = false;
+
+    if (
+        $category instanceof WP_Term &&
+        $category->taxonomy === 'category'
+    ) {
+        $ancestors = get_ancestors(
+            $category->term_id,
+            'category',
+            'taxonomy'
+        );
+
+        $root_id = $ancestors
+            ? (int) end($ancestors)
+            : (int) $category->term_id;
+
+        $root = get_term($root_id, 'category');
+
+        $is_collectibles_branch =
+            $root instanceof WP_Term &&
+            $root->slug === 'collectibles';
+    }
+
+    if ($is_collectibles_branch) {
+        return tcs_render_ebay_buy_it_now_widget(
+            $category_query,
+            $category_name,
+            $search_keywords
+        );
+    }
+        
     $ranked = fetch_ebay_ranked_items(
         $category_query,
         5,
