@@ -1,10 +1,43 @@
 <?php
+/**
+ * Build an eBay search phrase from a WordPress category trail.
+ */
+function tcs_ebay_category_search_phrase($category) {
+    if (!$category instanceof WP_Term || $category->taxonomy !== 'category') {
+        return '';
+    }
+
+    $term_ids = array_reverse(
+        get_ancestors($category->term_id, 'category', 'taxonomy')
+    );
+    $term_ids[] = $category->term_id;
+
+    $names = [];
+
+    foreach ($term_ids as $term_id) {
+        $term = get_term($term_id, 'category');
+
+        if (!$term instanceof WP_Term) {
+            continue;
+        }
+
+        $names[] = html_entity_decode(
+            $term->name,
+            ENT_QUOTES,
+            get_bloginfo('charset') ?: 'UTF-8'
+        );
+    }
+
+    return trim(implode(' ', $names));
+}
+
+
 function get_ebay_category_id_from_slug($slug) {
     if (empty($slug) || !is_string($slug)) {
         return false;
     }
 
-    $cache_key = 'ebay_cat_id_' . sanitize_key($slug);
+    $cache_key = 'ebay_cat_trail_v2_' . md5($slug);
     $cached_cat_id = get_transient($cache_key);
     if ($cached_cat_id !== false || get_transient($cache_key . '_empty')) {
         return $cached_cat_id;
@@ -112,10 +145,16 @@ XML;
 /**
  * Fetch ranked eBay auctions for tabs: bids, watched, hot.
  */
-function fetch_ebay_ranked_items($category_slug, $limit = 5) {
+function fetch_ebay_ranked_items($category_slug, $limit = 10, $search_keywords = '') {
 
     $access_token = get_transient('ebay_oauth_token') ?: get_ebay_oauth_token();   
-    $cache_key = 'ebay_ranked_' . sanitize_key($category_slug);
+    $cache_key = 'ebay_ranked_trail_v4_' . md5(
+        wp_json_encode([
+            $category_slug,
+            absint($limit),
+            $search_keywords,
+        ])
+    );
     $cached = get_transient($cache_key);
     if ($cached !== false && is_array($cached)) {
         return $cached;
@@ -126,6 +165,7 @@ function fetch_ebay_ranked_items($category_slug, $limit = 5) {
     }
 
     $category_id = get_ebay_category_id_from_slug($category_slug);
+
     if (!$category_id || !is_numeric($category_id)) {
         error_log("eBay widget: Invalid category ID for slug: $category_slug");
         return false;
@@ -134,10 +174,13 @@ function fetch_ebay_ranked_items($category_slug, $limit = 5) {
     $base_url = 'https://api.ebay.com/buy/browse/v1/item_summary/search';
     $query_params = [
         'category_ids' => $category_id,
-        'limit' =>      200,         // more items = better client-side ranking pool
-        'filter' => "buyingOptions:{AUCTION},bidCount:[1..],price:[3..],priceCurrency:USD,itemEndDate:[{$future_iso}..]",// optional price floor to avoid junk                  
-        'sort'         => 'endingSoonest',  // supported value: closest ending first
+        'limit'        => 200,
+        'filter'       => "buyingOptions:{AUCTION},bidCount:[1..],price:[3..],priceCurrency:USD,itemEndDate:[{$future_iso}..]",
+        'sort'         => 'endingSoonest',
     ];
+    if ($search_keywords !== '') {
+        $query_params['q'] = $search_keywords;
+    }
     $url = add_query_arg($query_params, $base_url);
 
     $response = wp_remote_get($url, [
@@ -323,23 +366,51 @@ function render_ebay_top_widget($atts) {
         'category' => '',
     ], $atts);
 
-    $category_slug = !empty($atts['category']) ? $atts['category'] : '';
+    $category_slug = trim((string) $atts['category']);
+    $category = null;
 
-    if (empty($category_slug) && is_category()) {
-        $category = get_queried_object();
-        if (!$category || is_wp_error($category)) {
-            return '<p>Invalid category.</p>';
-        }
-        $category_slug = $category->slug;
-        $category_name = $category->name;
-    } elseif (empty($category_slug)) {
-        return '<p>This widget requires a category slug or must be used on a category page.</p>';
-    } else {
+    if ($category_slug !== '') {
         $category = get_category_by_slug($category_slug);
-        $category_name = $category ? $category->name : ucwords(str_replace('-', ' ', $category_slug));
+    } elseif (is_category()) {
+        $category = get_queried_object();
+    } else {
+        return '<p>This widget requires a category slug or must be used on a category page.</p>';
     }
 
-    $ranked = fetch_ebay_ranked_items($category_slug);
+    if ($category instanceof WP_Term && $category->taxonomy === 'category') {
+        $category_name = $category->name;
+        $category_query = tcs_ebay_category_search_phrase($category);
+    } elseif ($category_slug !== '') {
+        // Preserve support for an explicit category without a matching WP term.
+        $category_query = trim(str_replace('-', ' ', $category_slug));
+        $category_name = ucwords($category_query);
+    } else {
+        return '<p>Invalid category.</p>';
+    }
+
+    if ($category_query === '') {
+        return '<p>Invalid category.</p>';
+    }
+
+    $search_keywords = '';
+
+    if (
+        $category instanceof WP_Term &&
+        $category->taxonomy === 'category' &&
+        (int) $category->parent > 0
+    ) {
+        $search_keywords = html_entity_decode(
+            $category->name,
+            ENT_QUOTES,
+            get_bloginfo('charset') ?: 'UTF-8'
+        );
+    }
+    
+    $ranked = fetch_ebay_ranked_items(
+        $category_query,
+        5,
+        $search_keywords
+    );
 
     if (!$ranked || !is_array($ranked)) {
         return '<p>No items found for this category.</p>';
