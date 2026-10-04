@@ -222,7 +222,7 @@ function fetch_ebay_ranked_items($category_slug, $limit = 10, $search_keywords =
         return false;
     }
 
-    $now = current_time('timestamp');
+    $now = time();
     $processed_items = [];
 
     foreach ($body['itemSummaries'] as $raw) {
