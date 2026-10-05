@@ -514,6 +514,90 @@ function tcs_render_ebay_buy_it_now_widget(
 
     return ob_get_clean();
 }
+function tcs_fetch_auction_parent_items(
+    WP_Term $auction_category,
+    int $limit = 5
+) {
+    $children = get_terms([
+        'taxonomy'   => 'category',
+        'parent'     => $auction_category->term_id,
+        'hide_empty' => false,
+    ]);
+
+    if (is_wp_error($children) || !$children) {
+        return false;
+    }
+
+    $pool = [];
+
+    foreach ($children as $child) {
+        $phrase = tcs_ebay_category_search_phrase($child);
+
+        if ($phrase === '') {
+            continue;
+        }
+
+        // Broad category lookup; no child-name keyword restriction.
+        $ranked = fetch_ebay_ranked_items(
+            $phrase,
+            $limit,
+            ''
+        );
+
+        if (!is_array($ranked)) {
+            continue;
+        }
+
+        foreach (['hot', 'bids', 'ending'] as $tab) {
+            foreach ($ranked[$tab] ?? [] as $item) {
+                $url = $item['viewItemURL'] ?? '';
+
+                if (
+                    $url === '' ||
+                    $url === '#' ||
+                    (int) ($item['endTimeUnix'] ?? 0) <= time() + 300
+                ) {
+                    continue;
+                }
+
+                // Deduplicate items returned in multiple tabs.
+                $pool[$url] = $item;
+            }
+        }
+    }
+
+    if (!$pool) {
+        return false;
+    }
+
+    $items = array_values($pool);
+
+    $hot = $items;
+    usort($hot, static function ($a, $b) {
+        return ($b['hotScore'] ?? 0) <=> ($a['hotScore'] ?? 0);
+    });
+
+    $bids = $items;
+    usort($bids, static function ($a, $b) {
+        return
+            (($b['bidCount'] ?? 0) <=> ($a['bidCount'] ?? 0))
+            ?: (($b['hotScore'] ?? 0) <=> ($a['hotScore'] ?? 0));
+    });
+
+    $ending = $items;
+    usort($ending, static function ($a, $b) {
+        return
+            (($a['endTimeUnix'] ?? PHP_INT_MAX)
+                <=> ($b['endTimeUnix'] ?? PHP_INT_MAX))
+            ?: (($b['bidCount'] ?? 0) <=> ($a['bidCount'] ?? 0));
+    });
+
+    return [
+        'hot'    => array_slice($hot, 0, $limit),
+        'bids'   => array_slice($bids, 0, $limit),
+        'ending' => array_slice($ending, 0, $limit),
+    ];
+}
 function render_ebay_top_widget($atts) {
 
     $atts = shortcode_atts([
@@ -599,11 +683,18 @@ function render_ebay_top_widget($atts) {
         );
     }
         
-    $ranked = fetch_ebay_ranked_items(
-        $category_query,
-        5,
-        $search_keywords
-    );
+    if ($is_auctions_root) {
+        $ranked = tcs_fetch_auction_parent_items(
+            $category,
+            5
+        );
+    } else {
+        $ranked = fetch_ebay_ranked_items(
+            $category_query,
+            5,
+            $search_keywords
+        );
+    }
 
     if (!$ranked || !is_array($ranked)) {
         return '<p>No items found for this category.</p>';
