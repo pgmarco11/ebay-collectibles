@@ -602,7 +602,14 @@ function render_ebay_top_widget($atts) {
 
     $atts = shortcode_atts([
         'category' => '',
-    ], $atts);
+        'type'     => 'auto',
+    ], $atts, 'ebay_top_10_widget');
+    
+    $requested_type = strtolower(trim((string) $atts['type']));
+    
+    if (!in_array($requested_type, ['auto', 'auction', 'buynow'], true)) {
+        return '<p>Invalid listing type. Use auction or buynow.</p>';
+    }
 
     $category_slug = trim((string) $atts['category']);
     $category = null;
@@ -675,7 +682,19 @@ function render_ebay_top_widget($atts) {
             $root->slug === 'collectibles';
     }
 
-    if ($is_collectibles_branch) {
+    $listing_type = $requested_type === 'auto'
+    ? ($is_collectibles_branch ? 'buynow' : 'auction')
+    : $requested_type;
+
+    if ($listing_type === 'buynow') {
+        /*
+        * The Auctions grouping page has no product-category phrase.
+        * Require a specific category for a Buy It Now override there.
+        */
+        if ($category_query === '') {
+            return '<p>Please specify a product category for Buy It Now items.</p>';
+        }
+
         return tcs_render_ebay_buy_it_now_widget(
             $category_query,
             $category_name,
