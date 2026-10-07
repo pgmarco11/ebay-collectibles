@@ -818,3 +818,409 @@ function render_ebay_top_widget($atts) {
     return ob_get_clean();
 }
 add_shortcode('ebay_top_10_widget', 'render_ebay_top_widget');
+
+/*
+ * Categories for the page/post shortcode.
+ */
+function tcs_top_items_categories($type, $post_id) {
+    $root_slug = $type === 'auction'
+        ? 'auctions'
+        : 'collectibles';
+
+    $root = get_term_by('slug', $root_slug, 'category');
+    $categories = [];
+
+    if ($root instanceof WP_Term) {
+        $children = get_terms([
+            'taxonomy'   => 'category',
+            'parent'     => $root->term_id,
+            'hide_empty' => false,
+        ]);
+
+        if (!is_wp_error($children)) {
+            $categories = $children;
+        }
+
+        // Collectibles can use its root when it has no children.
+        if (!$categories && $type === 'buynow') {
+            $categories = [$root];
+        }
+    }
+
+    // Auction fallback: categories assigned to this page/post.
+    if (!$categories && $type === 'auction' && $post_id) {
+        $assigned = wp_get_post_terms($post_id, 'category');
+
+        if (!is_wp_error($assigned)) {
+            $categories = $assigned;
+        }
+    }
+
+    return $categories;
+}
+
+/*
+ * Fetch Buy It Now candidates for one category.
+ */
+function tcs_top_items_buy_now_candidates($phrase, $limit) {
+    $category_id = get_ebay_category_id_from_slug($phrase);
+
+    if (!$category_id) {
+        return [];
+    }
+
+    $cache_key = 'tcs_top_bin_v1_' . md5(
+        wp_json_encode([$category_id, $limit])
+    );
+
+    $cached = get_transient($cache_key);
+
+    if (is_array($cached)) {
+        return $cached;
+    }
+
+    $token = get_transient('ebay_oauth_token')
+        ?: get_ebay_oauth_token();
+
+    if (!$token) {
+        return [];
+    }
+
+    $response = wp_remote_get(
+        add_query_arg([
+            'category_ids' => $category_id,
+            'limit'        => min(200, max(20, $limit * 2)),
+            'filter'       => 'buyingOptions:{FIXED_PRICE},price:[3..],priceCurrency:USD',
+        ], 'https://api.ebay.com/buy/browse/v1/item_summary/search'),
+        [
+            'headers' => [
+                'Authorization'         => 'Bearer ' . $token,
+                'X-EBAY-C-MARKETPLACE-ID' => 'EBAY_US',
+                'Accept'                => 'application/json',
+            ],
+            'timeout' => 12,
+        ]
+    );
+
+    if (
+        is_wp_error($response) ||
+        wp_remote_retrieve_response_code($response) !== 200
+    ) {
+        return [];
+    }
+
+    $body = json_decode(wp_remote_retrieve_body($response), true);
+
+    if (!is_array($body)) {
+        return [];
+    }
+
+    $items = [];
+
+    foreach ($body['itemSummaries'] ?? [] as $raw) {
+        $options = $raw['buyingOptions'] ?? [];
+
+        if (
+            !in_array('FIXED_PRICE', $options, true) ||
+            in_array('AUCTION', $options, true)
+        ) {
+            continue;
+        }
+
+        $end_time = !empty($raw['itemEndDate'])
+            ? strtotime($raw['itemEndDate'])
+            : null;
+
+        if (
+            !empty($raw['itemEndDate']) &&
+            (!$end_time || $end_time <= time())
+        ) {
+            continue;
+        }
+
+        $items[] = [
+            'title'       => $raw['title'] ?? 'Untitled Item',
+            'viewItemURL' => $raw['itemWebUrl'] ?? '',
+            'imageURL'    => $raw['image']['imageUrl'] ?? '',
+            'price'       => (float) ($raw['price']['value'] ?? 0),
+            'currency'    => $raw['price']['currency'] ?? 'USD',
+            'endTimeUnix' => $end_time,
+        ];
+    }
+
+    set_transient($cache_key, $items, 5 * MINUTE_IN_SECONDS);
+
+    return $items;
+}
+
+/**
+ * Page/post shortcode:
+ * [ebay_top_items type="auction" limit="10"]
+ */
+function tcs_render_ebay_top_items_shortcode($atts) {
+    $atts = shortcode_atts([
+        'type'  => 'auction',
+        'limit' => 10,
+    ], $atts, 'ebay_top_items');
+
+    $type = strtolower(trim((string) $atts['type']));
+
+    if (!in_array($type, ['auction', 'buynow'], true)) {
+        return '<p>Invalid type. Use auction or buynow.</p>';
+    }
+
+    $limit = filter_var(
+        $atts['limit'],
+        FILTER_VALIDATE_INT,
+        ['options' => ['min_range' => 1, 'max_range' => 200]]
+    );
+
+    if ($limit === false) {
+        return '<p>Limit must be a whole number between 1 and 200.</p>';
+    }
+
+    $categories = tcs_top_items_categories(
+        $type,
+        get_the_ID()
+    );
+
+    if (!$categories) {
+        return '<p>No suitable WordPress categories were found.</p>';
+    }
+
+    $pool = [];
+
+    foreach ($categories as $category) {
+        $phrase = tcs_ebay_category_search_phrase($category);
+
+        if ($phrase === '') {
+            continue;
+        }
+
+        if ($type === 'auction') {
+            $ranked = fetch_ebay_ranked_items(
+                $phrase,
+                $limit,
+                ''
+            );
+
+            if (!is_array($ranked)) {
+                continue;
+            }
+
+            $candidates = array_merge(
+                $ranked['hot'] ?? [],
+                $ranked['bids'] ?? [],
+                $ranked['ending'] ?? []
+            );
+        } else {
+            $candidates = tcs_top_items_buy_now_candidates(
+                $phrase,
+                $limit
+            );
+        }
+
+        foreach ($candidates as $item) {
+            $url = $item['viewItemURL'] ?? '';
+
+            if ($url === '' || $url === '#') {
+                continue;
+            }
+
+            $end_time = $item['endTimeUnix'] ?? null;
+
+            if (
+                ($type === 'auction' && !$end_time) ||
+                ($end_time && $end_time <= time() + 300)
+            ) {
+                continue;
+            }
+
+            $pool[$url] = $item;
+        }
+    }
+
+    if (!$pool) {
+        return '<p>No matching eBay items are available right now.</p>';
+    }
+
+    $items = array_values($pool);
+
+    if ($type === 'auction') {
+        $hot = $items;
+        usort($hot, static function ($a, $b) {
+            return ($b['hotScore'] ?? 0)
+                <=> ($a['hotScore'] ?? 0);
+        });
+
+        $bids = $items;
+        usort($bids, static function ($a, $b) {
+            return
+                (($b['bidCount'] ?? 0) <=> ($a['bidCount'] ?? 0))
+                ?: (($b['hotScore'] ?? 0) <=> ($a['hotScore'] ?? 0));
+        });
+
+        $ending = $items;
+        usort($ending, static function ($a, $b) {
+            return
+                ($a['endTimeUnix'] <=> $b['endTimeUnix'])
+                ?: (($b['bidCount'] ?? 0) <=> ($a['bidCount'] ?? 0));
+        });
+
+        $groups = [
+            'hot'    => array_slice($hot, 0, $limit),
+            'bids'   => array_slice($bids, 0, $limit),
+            'ending' => array_slice($ending, 0, $limit),
+        ];
+    } else {
+        // Preserve the order of the fetched Buy It Now candidates.
+        $groups = [
+            'buynow' => array_slice($items, 0, $limit),
+        ];
+    }
+
+    $labels = [
+        'hot'    => '🔥 Hot',
+        'bids'   => 'Most Bids',
+        'ending' => 'Ending Soon',
+        'buynow' => 'Buy It Now',
+    ];
+
+    $widget_id = wp_unique_id('tcs-top-items-');
+
+    ob_start();
+    ?>
+    <div
+        id="<?php echo esc_attr($widget_id); ?>"
+        class="ebay-top-widget"
+    >
+
+        <?php if ($type === 'auction'): ?>
+            <div class="ebay-tabs">
+                <?php foreach ($groups as $key => $group): ?>
+                    <button
+                        type="button"
+                        class="ebay-tab <?php echo $key === 'hot' ? 'active' : ''; ?>"
+                        data-tab="<?php echo esc_attr($key); ?>"
+                    >
+                        <?php echo esc_html($labels[$key]); ?>
+                    </button>
+                <?php endforeach; ?>
+            </div>
+        <?php endif; ?>
+
+        <?php foreach ($groups as $key => $group): ?>
+            <div
+                id="<?php echo esc_attr($widget_id . '-' . $key); ?>"
+                class="ebay-tab-content <?php
+                    echo ($key === 'hot' || $key === 'buynow')
+                        ? 'active'
+                        : '';
+                ?>"
+            >
+                <div class="ebay-grid">
+                    <?php foreach ($group as $item): ?>
+                        <div class="ebay-item">
+                            <?php if (!empty($item['imageURL'])): ?>
+                                <img
+                                    src="<?php echo esc_url($item['imageURL']); ?>"
+                                    alt="<?php echo esc_attr($item['title']); ?>"
+                                    class="ebay-item-image"
+                                    loading="lazy"
+                                >
+                            <?php endif; ?>
+
+                            <div class="ebay-item-details">
+                                <a
+                                    href="<?php echo esc_url($item['viewItemURL']); ?>"
+                                    target="_blank"
+                                    rel="noopener"
+                                    class="ebay-item-title"
+                                >
+                                    <?php
+                                    echo esc_html(wp_trim_words(
+                                        $item['title'],
+                                        10
+                                    ));
+                                    ?>
+                                </a>
+
+                                <p class="ebay-item-price">
+                                    <?php
+                                    echo esc_html(
+                                        number_format(
+                                            (float) $item['price'],
+                                            2
+                                        ) . ' ' .
+                                        ($item['currency'] ?? 'USD')
+                                    );
+                                    ?>
+                                </p>
+
+                                <?php if ($type === 'auction'): ?>
+                                    <p>
+                                        Bids:
+                                        <?php echo esc_html($item['bidCount']); ?>
+                                    </p>
+                                    <p>
+                                        Ends in:
+                                        <?php
+                                        echo esc_html(ebay_time_left(
+                                            $item['endTime'] ?? null
+                                        ));
+                                        ?>
+                                    </p>
+                                <?php else: ?>
+                                    <p>Buy It Now</p>
+                                <?php endif; ?>
+                            </div>
+                        </div>
+                    <?php endforeach; ?>
+                </div>
+            </div>
+        <?php endforeach; ?>
+    </div>
+
+    <?php if ($type === 'auction'): ?>
+        <script>
+        (() => {
+            const widget = document.getElementById(
+                <?php echo wp_json_encode($widget_id); ?>
+            );
+
+            if (!widget) return;
+
+            widget.addEventListener('click', function (event) {
+                const tab = event.target.closest('.ebay-tab');
+
+                if (!tab || !widget.contains(tab)) return;
+
+                /*
+                 * Keep the sidebar's document-level tab handler
+                 * from also handling this separate widget.
+                 */
+                event.stopPropagation();
+
+                widget.querySelectorAll('.ebay-tab').forEach(button => {
+                    button.classList.toggle('active', button === tab);
+                });
+
+                widget.querySelectorAll('.ebay-tab-content').forEach(panel => {
+                    panel.classList.toggle(
+                        'active',
+                        panel.id === widget.id + '-' + tab.dataset.tab
+                    );
+                });
+            });
+        })();
+        </script>
+    <?php endif; ?>
+    <?php
+
+    return ob_get_clean();
+}
+
+add_shortcode(
+    'ebay_top_items',
+    'tcs_render_ebay_top_items_shortcode'
+);
