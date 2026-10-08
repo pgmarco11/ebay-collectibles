@@ -145,11 +145,35 @@ function tcs_get_cached_ebay_selling_pages() {
     }
     if (is_array($cached)) {
         $pages = [];
+    
         foreach ($cached as $raw) {
             $xml = TCS_Ebay_API_Client::parse_xml($raw);
-            if (is_wp_error($xml)) return $xml;
+    
+            if (is_wp_error($xml)) {
+                set_transient(
+                    $key,
+                    ['error' => $xml->get_error_message()],
+                    MINUTE_IN_SECONDS
+                );
+    
+                return $xml;
+            }
+    
             $pages[] = $xml;
         }
+    
+        $validation = tcs_validate_ebay_selling_pages($pages);
+    
+        if (is_wp_error($validation)) {
+            set_transient(
+                $key,
+                ['error' => $validation->get_error_message()],
+                MINUTE_IN_SECONDS
+            );
+    
+            return $validation;
+        }
+    
         return $pages;
     }
     $lock = $key . '_lock';
@@ -208,7 +232,7 @@ function tcs_get_cached_ebay_selling_pages() {
         }
 
         set_transient($key, $raw_pages, MINUTE_IN_SECONDS);
-        
+
         return $pages;
     } finally {
         TCS_Ebay_API_Client::release_lock($lock, $owner);
@@ -263,10 +287,17 @@ function tcs_run_ebay_import($type, $force = false) {
         }
         
         if ($result !== true) {
-            return new WP_Error(
+            $error = new WP_Error(
                 'tcs_import_no_result',
-                'The import did not finish successfully.'
+                'The import did not finish successfully. ' .
+                'Some changes may already have been applied.'
             );
+        
+            echo '<div class="notice notice-error"><p>' .
+                esc_html($error->get_error_message()) .
+                '</p></div>';
+        
+            return $error;
         }
         
         return true;

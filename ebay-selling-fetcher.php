@@ -85,19 +85,21 @@ function create_buy_it_now_posts($force = false) {
 
 function create_buy_it_now_posts_unlocked($items) {
 
-        if ($items === false) {
-            error_log("Failed to fetch Buy It Now items; check previous logs for details");
-            echo '<div class="error"><p>Failed to fetch Buy It Now items. Check logs or try again later.</p></div>';
-            return;
-        } elseif ($items === 'token_expired') {
-            echo '<div class="error"><p>Your eBay authentication token has expired. Please generate a new one in the eBay Developer Portal and update ebay.env.</p></div>';
-            return;
+        if (!is_array($items) || isset($items['error'])) {
+            return new WP_Error(
+                'tcs_bin_import_failed',
+                is_array($items)
+                    ? ($items['error'] ?? 'Buy It Now data is invalid.')
+                    : 'Buy It Now data is invalid.'
+            );
         }
-
+        
         if (empty($items['items'])) {
-            error_log("No active Buy It Now items found in eBay response");
-            echo '<div class="notice notice-warning"><p>No active Buy It Now items found.</p></div>';
-            return;
+            echo '<div class="notice notice-warning"><p>' .
+                'No active Buy It Now items found. Existing posts were preserved.' .
+                '</p></div>';
+        
+            return true;
         }
       
         /*
@@ -144,11 +146,10 @@ function create_buy_it_now_posts_unlocked($items) {
                     'Collectibles category.' .
                     '</p></div>';
 
-                return;
+                return $created;
             }
 
-            $parent_cat_id =
-                (int) $created['term_id'];
+            $parent_cat_id = (int) $created['term_id'];
 
         } else {
 
@@ -175,7 +176,10 @@ function create_buy_it_now_posts_unlocked($items) {
                     'The main Collectibles category is not top-level.' .
                     '</p></div>';
 
-                return;
+                return new WP_Error(
+                    'tcs_invalid_collectibles_parent',
+                    'The main Collectibles category must be top-level.'
+                );
             }
         }
 
@@ -265,7 +269,7 @@ function create_buy_it_now_posts_unlocked($items) {
                     if (is_wp_error($subcat)) {
                         error_log("Failed to create subcategory '$subcat_name' with slug '$subcat_slug' under parent ID $current_parent_id: " . $subcat->get_error_message());
                         echo '<div class="notice notice-error"><p>Failed to create subcategory: ' . esc_html($subcat->get_error_message()) . '</p></div>';
-                        continue;
+                        return $subcat;
                     }
             
                     $subcat_id = $subcat['term_id'];
@@ -306,6 +310,7 @@ function create_buy_it_now_posts_unlocked($items) {
             if (is_wp_error($post_id)) {
                 error_log("Failed to update post for eBay item {$item['itemId']}: " . $post_id->get_error_message());
                 echo '<div class="notice notice-error"><p>Failed to update post for item ' . esc_html($item['itemId']) . '</p></div>';
+                return $post_id;
             } else {
                 error_log("Updated post ID {$post_id} for eBay Buy It Now item {$item['itemId']}");
                 $updated_count++;
@@ -347,6 +352,7 @@ function create_buy_it_now_posts_unlocked($items) {
             if (is_wp_error($post_id)) {
                 error_log("Failed to create post for eBay item {$item['itemId']}: " . $post_id->get_error_message());
                 echo '<div class="notice notice-error"><p>Failed to create post for item ' . esc_html($item['itemId']) . '</p></div>';
+                return $post_id;
             } else {
                 error_log("Created post ID {$post_id} for eBay Buy It Now item {$item['itemId']}");
                 $created_count++;
@@ -407,6 +413,7 @@ function create_buy_it_now_posts_unlocked($items) {
     );
 
     echo '<div class="updated"><p>' . esc_html($message) . '</p></div>';
+    return true;
 }
 add_action('ebay_update_buy_it_now_posts', 'create_buy_it_now_posts');
 

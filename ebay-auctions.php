@@ -15,7 +15,7 @@ function fetch_ebay_auctions() {
     // delete_transient('ebay_auctions_cache');
 
     // Check cache first
-    $cached = get_transient('ebay_auctions_cache_v2');
+    $cached = get_transient('ebay_auctions_cache_v3');
     if ($cached !== false && !empty($cached)) {
         return $cached;
     }
@@ -136,7 +136,7 @@ function fetch_ebay_auctions() {
         error_log("No items found in ActiveList->ItemArray->Item");
     }
 
-    set_transient('ebay_auctions_cache_v2', $data, 5 * MINUTE_IN_SECONDS);
+    set_transient('ebay_auctions_cache_v3', $data, 5 * MINUTE_IN_SECONDS);
     return $data;
 }
 
@@ -301,70 +301,28 @@ function create_auction_posts_unlocked($auctions) {
             $created = wp_insert_term('Auctions', 'category', ['slug' => 'auctions']);
             if (is_wp_error($created)) {
                 error_log("Error creating parent 'Auctions' category: " . $created->get_error_message());
-                return;
+                return $created;
             }
             $parent_cat_id = $created['term_id'];
         } else {
             $parent_cat_id = $parent_cat->term_id;
         }
 
-        // Delete expired auction posts under "Auctions" category
-        $expired_posts = get_posts([
-            'post_type' => 'post',
-            'post_status' => 'publish',
-            'numberposts' => -1,
-            'meta_query' => [
-                [
-                    'key' => 'ebay_end_date',
-                    'compare' => 'EXISTS',
-                ]
-            ],
-            'tax_query' => [
-                [
-                    'taxonomy' => 'category',
-                    'field' => 'term_id',
-                    'terms' => $parent_cat_id,
-                    'include_children' => true, // Include all Auctions subcategories.
-                ]
-            ]
-        ]);
-
-        foreach ($expired_posts as $post) {
-            $end_date_str = get_post_meta($post->ID, 'ebay_end_date', true);
-            if ($end_date_str) {
-                $end_date = strtotime($end_date_str);
-                if ($end_date && time() > $end_date) {
-                    // Delete attachments
-                    $attachments = get_attached_media('', $post->ID);
-                    foreach ($attachments as $attachment) {
-                        wp_delete_attachment($attachment->ID, true);
-                    }
-                    // Delete post
-                    wp_delete_post($post->ID, true);
-                    error_log("Deleted expired auction post ID {$post->ID} with end date $end_date_str");
-                }
-            }
-        }   
-
-        if (is_array($auctions) && isset($auctions['error'])) {
-            echo '<div class="error"><p>' . esc_html($auctions['error']) . '</p>';
-            if (isset($auctions['details'])) {
-                echo '<p>Details: ' . esc_html($auctions['details']) . '</p>';
-            }
-            if (isset($auctions['response'])) {
-                echo '<pre>';
-                print_r($auctions['response']);
-                echo '</pre>';
-            }
-            echo '</div>';
-            return;
+        if (!is_array($auctions) || isset($auctions['error'])) {
+            return new WP_Error(
+                'tcs_auction_import_failed',
+                is_array($auctions)
+                    ? ($auctions['error'] ?? 'Auction data is invalid.')
+                    : 'Auction data is invalid.'
+            );
         }
-
+        
         if (empty($auctions['items'])) {
-            echo '<div class="notice notice-warning"><p>No active auctions found.</p><pre>';
-            print_r($auctions);
-            echo '</pre></div>';
-            return;
+            echo '<div class="notice notice-warning"><p>' .
+                'No active auctions found. Existing posts were preserved.' .
+                '</p></div>';
+        
+            return true;
         }
 
         // Get all existing auction posts under "Auctions" category
@@ -399,18 +357,7 @@ function create_auction_posts_unlocked($auctions) {
         // Current eBay item IDs
         $current_item_ids = array_column($auctions['items'], 'itemId');
 
-        // Delete posts for auctions no longer active under "Auctions" category
-        foreach ($existing_item_ids as $item_id => $post_id) {
-            if (!in_array($item_id, $current_item_ids)) {
-                $attachments = get_attached_media('', $post_id);
-                foreach ($attachments as $attachment) {
-                    wp_delete_attachment($attachment->ID, true);
-                }
-                wp_delete_post($post_id, true);
-                error_log("Deleted post ID $post_id for inactive eBay item $item_id");
-            }
-        }
-    
+       
         // Define parent category
         if (!$parent_cat) {            
             $parent_cat = get_term_by('name', 'Auctions', 'category');
@@ -431,69 +378,69 @@ function create_auction_posts_unlocked($auctions) {
 
             if (is_wp_error($collectibles)) {
                 error_log("Error creating 'Collectibles' category: " . $collectibles->get_error_message());
-                return; // Stop if we can't create the category
+                return $collectibles; // Stop if we can't create the category
             }            
         } 
 
-        $created_posts = [];
-        $updated_posts = [];
+    $created_posts = [];
+    $updated_posts = [];
 
-        foreach ($auctions['items'] as $item) {
-            $end_time = isset($item['endTime']) ? $item['endTime'] : 'Not available';
-            $ebay_bid_count = isset($item['bidCount']) ? $item['bidCount'] : 0;    
+    foreach ($auctions['items'] as $item) {
+        $end_time = isset($item['endTime']) ? $item['endTime'] : 'Not available';
+        $ebay_bid_count = isset($item['bidCount']) ? $item['bidCount'] : 0;    
 
-            // Normalize category name
-            $subcategory_name = trim($item['categoryName']);
-            $item_subcategories = array_filter(explode(' > ', str_replace(':', ' > ', $subcategory_name)));
-            $item_subcategories = array_map('trim', $item_subcategories);
+        // Normalize category name
+        $subcategory_name = trim($item['categoryName']);
+        $item_subcategories = array_filter(explode(' > ', str_replace(':', ' > ', $subcategory_name)));
+        $item_subcategories = array_map('trim', $item_subcategories);
 
-            $subcat = isset($item_subcategories[0]) ? $item_subcategories[0] : '';
+        $subcat = isset($item_subcategories[0]) ? $item_subcategories[0] : '';
 
-            // Adjust category mapping using array_shift and array_unshift
-            if ($subcat === 'Sports Mem, Cards & Fan Shop') {
+        // Adjust category mapping using array_shift and array_unshift
+        if ($subcat === 'Sports Mem, Cards & Fan Shop') {
                 array_shift($item_subcategories);
                 array_unshift(
                     $item_subcategories,
                     'Sports Cards & Memorabilia'
                 );
-            } elseif ($subcat === 'Movies & TV') {
+        } elseif ($subcat === 'Movies & TV') {
                 array_shift($item_subcategories);
                 array_unshift(
                     $item_subcategories,
                     'Movies/DVD'
                 );
 
-            } elseif (
+        } elseif (
                 $subcat === 'Music' &&
                 isset($item_subcategories[1]) &&
                 strcasecmp(
                     $item_subcategories[1],
                     'Vinyl Records'
                 ) === 0
-            ) {
+        ) {
                 // Remove "Music" but retain "Vinyl Records".
                 array_shift($item_subcategories);
 
-            } elseif ($subcat === 'Toys & Hobbies') {
+        } elseif ($subcat === 'Toys & Hobbies') {
                 array_shift($item_subcategories);
                 array_unshift(
                     $item_subcategories,
                     'Toys & Hobbies'
                 );
-            } elseif (
+        } elseif (
                 $subcat === 'Collectibles & Other Auctions' ||
                 stripos($subcat, 'Collectibles') !== false
-            ) {
+         ) {
                 array_shift($item_subcategories);
                 array_unshift(
                     $item_subcategories,
                     'Collectibles'
                 );
-            }
+        }
 
-            // Check for existing category by name
-            $category_ids = [$parent_cat_id];
-            $current_parent_id = $parent_cat_id;
+        // Check for existing category by name
+        $category_ids = [$parent_cat_id];
+        $current_parent_id = $parent_cat_id;
 
             foreach ($item_subcategories as $index => $subcategory) {
                 $subcat_name = trim($subcategory);
@@ -509,23 +456,24 @@ function create_auction_posts_unlocked($auctions) {
                     'parent'     => $current_parent_id,
                 ]);
 
-                $matched_term_id = null;
-                foreach ($child_terms as $term) {
-                    if (
-                        sanitize_title($term->name) === $subcat_slug ||
-                        (
+            $matched_term_id = null;
+            foreach ($child_terms as $term) {
+                if (sanitize_title($term->name) === $subcat_slug || (
                             $subcat_name === 'Collectibles' &&
                             $term->slug === 'collectibles-auctions'
-                        )
-                    ) {
+                    )) 
+                    {
                         $matched_term_id = $term->term_id;
                         break;
                     }
                 }
 
                 if ($matched_term_id) {
-                    $subcat_id = $matched_term_id; // Use existing term
-                } else {                    
+
+                    $subcat_id = $matched_term_id; // Use existing term\
+
+                } else { 
+
                     $subcat = wp_insert_term(
                         $subcat_name,
                         'category',
@@ -548,18 +496,18 @@ function create_auction_posts_unlocked($auctions) {
                             esc_html($subcat->get_error_message()) .
                             '</p></div>';
                     
-                        continue;
+                        return $subcat;
                     }
                     
-                    $subcat_id = $subcat['term_id'];
-                }
-
-                // Add to category list and move one level deeper
-                $category_ids[] = $subcat_id;
-                $current_parent_id = $subcat_id;
+                $subcat_id = $subcat['term_id'];
             }
 
-            $post_data = array(
+            // Add to category list and move one level deeper
+            $category_ids[] = $subcat_id;
+            $current_parent_id = $subcat_id;
+        }
+
+        $post_data = array(
                 'post_title'   => $item['title'],
                 'post_content' => $item['description'] . '<br>',
                 'post_status'  => 'publish',
@@ -574,7 +522,7 @@ function create_auction_posts_unlocked($auctions) {
                     'ebay_bid_count' => $ebay_bid_count,
                     'ebay_end_date' => $end_time,
                 ),
-            );
+        );
 
         // Check for existing post
         if (isset($existing_item_ids[$item['itemId']])) {
@@ -582,6 +530,7 @@ function create_auction_posts_unlocked($auctions) {
             $result = wp_update_post($post_data, true);
                 if (is_wp_error($result)) {
                     error_log("Failed to update post for ItemID {$item['itemId']}: " . $result->get_error_message());
+                    return $result;
                 } else {
                     // Only set featured image if it doesn't exist or has changed
                     if (!empty($item['imageURL'])) {
@@ -629,6 +578,7 @@ function create_auction_posts_unlocked($auctions) {
             $post_id = wp_insert_post($post_data, true);
             if (is_wp_error($post_id)) {
                     error_log("Failed to create post for ItemID {$item['itemId']}: " . $post_id->get_error_message());
+                    return $post_id;
             } else {
                 // Set featured image for new posts
                 if (!empty($item['imageURL'])) {
@@ -651,6 +601,57 @@ function create_auction_posts_unlocked($auctions) {
             }
         }
     }
+
+     // Delete posts for auctions no longer active under "Auctions" category
+     foreach ($existing_item_ids as $item_id => $post_id) {
+        if (!in_array($item_id, $current_item_ids)) {
+            $attachments = get_attached_media('', $post_id);
+            foreach ($attachments as $attachment) {
+                wp_delete_attachment($attachment->ID, true);
+            }
+            wp_delete_post($post_id, true);
+            error_log("Deleted post ID $post_id for inactive eBay item $item_id");
+        }
+    }
+          
+    // Delete expired auction posts under "Auctions" category
+    $expired_posts = get_posts([
+            'post_type' => 'post',
+            'post_status' => 'publish',
+            'numberposts' => -1,
+            'meta_query' => [
+                [
+                    'key' => 'ebay_end_date',
+                    'compare' => 'EXISTS',
+                ]
+            ],
+            'tax_query' => [
+                [
+                    'taxonomy' => 'category',
+                    'field' => 'term_id',
+                    'terms' => $parent_cat_id,
+                    'include_children' => true, // Include all Auctions subcategories.
+                ]
+            ]
+    ]);
+
+    foreach ($expired_posts as $post) {
+        $end_date_str = get_post_meta($post->ID, 'ebay_end_date', true);
+        if ($end_date_str) {
+            $end_date = strtotime($end_date_str);
+            if ($end_date && time() > $end_date) {
+                // Delete attachments
+                $attachments = get_attached_media('', $post->ID);
+                foreach ($attachments as $attachment) {
+                        wp_delete_attachment($attachment->ID, true);
+                }
+                // Delete post
+                wp_delete_post($post->ID, true);
+                error_log("Deleted expired auction post ID {$post->ID} with end date $end_date_str");
+            }
+        }
+    }   
+    return true;
 }
 add_action('ebay_update_posts', 'create_auction_posts');
 

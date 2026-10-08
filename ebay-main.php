@@ -159,7 +159,7 @@ add_filter('query_vars', 'ebay_add_query_vars');
 function ebay_admin_notices() {
     if (get_current_screen()->id === 'toplevel_page_ebay-inventory' && isset($_GET['message'])) {
         if ($_GET['message'] === 'auction_failed') {
-            echo '<div class="notice notice-error"><p>eBay refresh could not complete. Existing posts were preserved. Try again later.</p></div>';
+            echo '<div class="notice notice-error"><p>eBay refresh did not complete. Some changes may already have been applied. Check the import results before retrying.</p></div>';
         }
         if ($_GET['message'] === 'auction_refreshed') {
             echo '<div class="notice notice-success is-dismissible"><p>eBay Auctions refreshed successfully via URL trigger.</p></div>';
