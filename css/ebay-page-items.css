@@ -88,7 +88,7 @@
 
 .tcs-ebay-page .tcs-ebay-cards {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(min(100%, 190px), 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 290px), 1fr));
     gap: 1rem;
     margin: 0;
     padding: 0;
@@ -207,4 +207,33 @@
     clip: rect(0, 0, 0, 0);
     white-space: nowrap;
     border: 0;
+}
+/* Consistent card height across all category sections. */
+.tcs-ebay-page .tcs-ebay-card {
+    height: 390px;
+}
+
+.tcs-ebay-page .tcs-ebay-image-link {
+    flex: 0 0 160px;
+    height: 160px;
+    min-height: 160px;
+    aspect-ratio: auto;
+}
+
+.tcs-ebay-page .tcs-ebay-image-link img {
+    max-height: 100%;
+    object-fit: contain;
+}
+
+.tcs-ebay-page .tcs-ebay-card-body {
+    min-height: 0;
+}
+
+.tcs-ebay-page .tcs-ebay-card-title {
+    flex-shrink: 0;
+    height: 4.35em;
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
 }
