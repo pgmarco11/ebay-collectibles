@@ -217,8 +217,13 @@ function fetch_ebay_ranked_items($category_slug, $limit = 10, $search_keywords =
             : false;
     }
 
-    $cache_empty = static function () use ($cache_key) {
-        set_transient($cache_key, ['hot' => [], 'bids' => [], 'ending' => []], 30);
+    $cache_empty = static function ($ttl = 30) use ($cache_key) {
+        set_transient(
+            $cache_key,
+            ['hot' => [], 'bids' => [], 'ending' => []],
+            $ttl
+        );
+    
         return false;
     };
     $fetch_lock = 'tcs_ebay_fetch_v2_' . md5($cache_key);
@@ -283,7 +288,26 @@ function fetch_ebay_ranked_items($category_slug, $limit = 10, $search_keywords =
         }
 
         $body = json_decode(wp_remote_retrieve_body($response), true);
-        if (empty($body['itemSummaries']) || !is_array($body['itemSummaries'])) {
+
+        // Retry invalid responses and API errors after 30 seconds.
+        if (!is_array($body) || !empty($body['errors'])) {
+            return $cache_empty();
+        }
+        
+        // A successful search with zero matches stays cached for 5 minutes.
+        if (
+            isset($body['total'])
+            && is_numeric($body['total'])
+            && (float) $body['total'] === 0.0
+        ) {
+            return $cache_empty(5 * MINUTE_IN_SECONDS);
+        }
+        
+        // Missing or malformed item data gets a short retry.
+        if (
+            empty($body['itemSummaries'])
+            || !is_array($body['itemSummaries'])
+        ) {
             return $cache_empty();
         }
 
@@ -983,13 +1007,9 @@ function tcs_top_items_buy_now_candidates(
         return $active_items($cached);
     }
 
-    $cache_empty = static function () use ($cache_key) {
-        set_transient(
-            $cache_key,
-            [],
-            2 * MINUTE_IN_SECONDS
-        );
-
+    $cache_empty = static function ($ttl = MINUTE_IN_SECONDS) use ($cache_key) {
+        set_transient($cache_key, [], $ttl);
+    
         return [];
     };
 
@@ -1063,9 +1083,19 @@ function tcs_top_items_buy_now_candidates(
             return $cache_empty();
         }
 
-        $summaries = $body['itemSummaries'] ?? [];
+        // Cache a confirmed successful search with no matches for 15 minutes.
+        if (
+            isset($body['total'])
+            && is_numeric($body['total'])
+            && (float) $body['total'] === 0.0
+        ) {
+            return $cache_empty(15 * MINUTE_IN_SECONDS);
+        }
 
-        if (!is_array($summaries)) {
+        // Retry missing or malformed item data after one minute.
+        $summaries = $body['itemSummaries'] ?? null;
+
+        if (!is_array($summaries) || empty($summaries)) {
             return $cache_empty();
         }
 
@@ -1123,7 +1153,7 @@ function tcs_top_items_buy_now_candidates(
         set_transient(
             $cache_key,
             $items,
-            ($items ? 15 : 2) * MINUTE_IN_SECONDS
+            15 * MINUTE_IN_SECONDS
         );
 
         return $active_items($items);
