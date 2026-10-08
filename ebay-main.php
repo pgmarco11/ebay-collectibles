@@ -205,6 +205,7 @@ function get_ebay_oauth_token() {
 function ebay_styles() {
     $general_style_path = plugin_dir_path(__FILE__) . 'css/ebay-styles.css';
     $item_style_path    = plugin_dir_path(__FILE__) . 'css/ebay-item.css';
+    $page_style_path    = plugin_dir_path(__FILE__) . 'css/ebay-page-items.css';
 
     wp_enqueue_style(
         'ebay-styles',
@@ -221,6 +222,15 @@ function ebay_styles() {
         ['ebay-styles'],
         file_exists($item_style_path)
             ? filemtime($item_style_path)
+            : '1.0'
+    );
+
+    wp_enqueue_style(
+        'ebay-page-items-style',
+        plugin_dir_url(__FILE__) . 'css/ebay-page-items.css',
+        ['ebay-styles'],
+        file_exists($page_style_path)
+            ? filemtime($page_style_path)
             : '1.0'
     );
 }

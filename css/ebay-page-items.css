@@ -1,0 +1,210 @@
+.tcs-ebay-page {
+    --tcs-border: #d8dee6;
+    --tcs-muted: #526173;
+    --tcs-accent: #174ea6;
+    color: #17212f;
+}
+
+.tcs-ebay-page,
+.tcs-ebay-page * {
+    box-sizing: border-box;
+}
+
+.tcs-ebay-page .tcs-ebay-section {
+    margin: 0 0 2.5rem;
+}
+
+.tcs-ebay-page .tcs-ebay-section-header {
+    display: flex;
+    align-items: center;
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+}
+
+.tcs-ebay-page .tcs-ebay-group-heading {
+    margin: 2.5rem 0 0 0;  
+    font-size: 2.4rem;
+    line-height: 1.3;
+    text-align: left;
+}
+
+.tcs-ebay-page > .tcs-ebay-group-heading:first-child {
+    margin-top: 0;
+}
+.tcs-ebay-page .tcs-ebay-section-header {
+    border-bottom: 2px solid var(--tcs-border);
+    padding: 0.5rem 0 0.5rem;
+}
+
+.tcs-ebay-page .tcs-ebay-section-header h3 {
+    margin: 0;
+    font-size: 1.2rem;
+    line-height: 1.3;
+}
+
+.tcs-ebay-page .tcs-ebay-type {
+    border-radius: 999px;
+    background: #edf2f7;
+    padding: .3rem .65rem;
+    font-size: .8rem;
+    display: block;
+    max-width: 120px;
+    text-align: center;
+    margin: 0.5rem 0;
+    font-weight: 700;
+    text-transform: uppercase;
+}
+
+.tcs-ebay-page .tcs-ebay-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .5rem;
+    margin-bottom: 2rem;
+}
+
+.tcs-ebay-page .tcs-ebay-tab {
+    appearance: none;
+    border: 1px solid var(--tcs-border);
+    border-radius: .5rem;
+    background: #fff;
+    color: #17212f;
+    padding: .65rem .9rem;
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.tcs-ebay-page .tcs-ebay-tab[aria-selected="true"] {
+    border-color: var(--tcs-accent);
+    background: var(--tcs-accent);
+    color: #fff;
+}
+
+.tcs-ebay-page .tcs-ebay-panel[hidden] {
+    display: none !important;
+}
+
+.tcs-ebay-page .tcs-ebay-cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 190px), 1fr));
+    gap: 1rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.tcs-ebay-page .tcs-ebay-card {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    border: 1px solid var(--tcs-border);
+    border-radius: .75rem;
+    background: #fff;
+}
+
+.tcs-ebay-page .tcs-ebay-image-link {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    aspect-ratio: 4 / 3;
+    padding: .75rem;
+    background: #f5f7fa;
+}
+
+.tcs-ebay-page .tcs-ebay-image-link img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    max-height: 180px;
+    object-fit: contain;
+}
+
+.tcs-ebay-page .tcs-ebay-no-image {
+    color: var(--tcs-muted);
+    font-size: .85rem;
+}
+
+.tcs-ebay-page .tcs-ebay-card-body {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: .75rem;
+    padding: 1rem;
+}
+
+.tcs-ebay-page .tcs-ebay-card-title {
+    margin: 0;
+    font-size: 1rem;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+}
+
+.tcs-ebay-page .tcs-ebay-card-title a {
+    color: #17212f;
+    text-decoration: none;
+}
+
+.tcs-ebay-page .tcs-ebay-card-title a:hover {
+    color: var(--tcs-accent);
+    text-decoration: underline;
+}
+
+.tcs-ebay-page .tcs-ebay-price {
+    margin: auto 0 0;
+    font-size: 1.15rem;
+    font-weight: 700;
+}
+
+.tcs-ebay-page .tcs-ebay-meta {
+    display: grid;
+    gap: .35rem;
+    margin: 0;
+    font-size: .85rem;
+}
+
+.tcs-ebay-page .tcs-ebay-meta > div {
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: .35rem;
+}
+
+.tcs-ebay-page .tcs-ebay-meta dt {
+    color: var(--tcs-muted);
+    font-weight: 400;
+}
+
+.tcs-ebay-page .tcs-ebay-meta dd {
+    margin: 0;
+    font-weight: 600;
+}
+
+.tcs-ebay-page .tcs-ebay-buy-label {
+    margin: 0;
+    color: var(--tcs-muted);
+    font-size: .85rem;
+}
+
+.tcs-ebay-page a:focus-visible,
+.tcs-ebay-page button:focus-visible,
+.tcs-ebay-page [role="tabpanel"]:focus-visible {
+    outline: 3px solid #174ea6;
+    outline-offset: 3px;
+}
+
+.tcs-ebay-page .tcs-ebay-sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
