@@ -202,38 +202,49 @@ function handle_search_ebay_items() {
         );
     }
 
-    $access_token = get_transient('ebay_oauth_token')
-        ?: get_ebay_oauth_token();
-
-    if (!$access_token) {
-        wp_send_json_error(
-            [
-                'message' => 'Unable to obtain an eBay access token.',
-            ],
-            500
-        );
+    if (!TCS_Ebay_API_Client::throttle('search', 12)) {
+        wp_send_json_error(['message' => 'Too many searches. Wait a minute before trying again.'], 429);
     }
+    $cache_key = 'tcs_ebay_title_search_v1_' . md5($query);
+    $cached = get_transient($cache_key);
+    if (is_array($cached)) {
+        $response = $cached;
+    } else {
+        $access_token = get_transient('ebay_oauth_token')
+            ?: get_ebay_oauth_token();
 
-    $url = add_query_arg(
-        [
-            'q'     => $query,
-            'limit' => 12,
-        ],
-        'https://api.ebay.com/buy/browse/v1/item_summary/search'
-    );
+        if (!$access_token) {
+            wp_send_json_error(
+                [
+                    'message' => 'Unable to obtain an eBay access token.',
+                ],
+                500
+            );
+        }
 
-    $response = wp_remote_get(
-        $url,
-        [
-            'headers' => [
-                'Authorization'                  => 'Bearer ' . $access_token,
-                'X-EBAY-C-MARKETPLACE-ID'       => 'EBAY_US',
-                'X-EBAY-C-ENDUSERCTX'           => 'contextualLocation=country=US',
-                'Accept'                        => 'application/json',
+        $url = add_query_arg(
+            [
+                'q'     => $query,
+                'limit' => 12,
             ],
-            'timeout' => 12,
-        ]
-    );
+            'https://api.ebay.com/buy/browse/v1/item_summary/search'
+        );
+
+        $response = TCS_Ebay_API_Client::request(
+            'browse',
+            $url,
+            [
+                'headers' => [
+                    'Authorization'                  => 'Bearer ' . $access_token,
+                    'X-EBAY-C-MARKETPLACE-ID'       => 'EBAY_US',
+                    'X-EBAY-C-ENDUSERCTX'           => 'contextualLocation=country=US',
+                    'Accept'                        => 'application/json',
+                ],
+                'timeout' => 12,
+            ]
+        );
+
+    }
 
     if (is_wp_error($response)) {
         error_log(
@@ -273,6 +284,13 @@ function handle_search_ebay_items() {
             ],
             $status
         );
+    }
+
+    if (!is_array($cached)) {
+        set_transient($cache_key, [
+            'response' => ['code' => 200, 'message' => 'OK'],
+            'body' => wp_json_encode($body), 'headers' => [], 'cookies' => [],
+        ], 5 * MINUTE_IN_SECONDS);
     }
 
     $results = [];
@@ -338,7 +356,18 @@ add_action('wp_ajax_get_ebay_item_details', 'handle_get_ebay_item_details');
 add_action('wp_ajax_nopriv_get_ebay_item_details', 'handle_get_ebay_item_details');
 
 function handle_get_ebay_item_details() {
-    $item_id = sanitize_text_field($_GET['item_id']);
+    check_ajax_referer('ebay_nonce', 'nonce');
+    if (!TCS_Ebay_API_Client::throttle('details', 12)) {
+        status_header(429);
+        echo '<p class="error">Too many item requests. Wait a minute before trying again.</p>';
+        wp_die();
+    }
+    $item_id = isset($_GET['item_id']) ? sanitize_text_field(wp_unslash($_GET['item_id'])) : '';
+    if (!preg_match('/^\d{9,20}$/', $item_id)) {
+        status_header(400);
+        echo '<p class="error">Enter a valid numeric eBay item ID.</p>';
+        wp_die();
+    }
     $item_info = get_ebay_item_info($item_id);
 
     $ebay_item_id = get_post_meta(get_the_ID(), 'ebay_item_id', true);    
@@ -437,50 +466,9 @@ function handle_get_ebay_item_details() {
 }
 //Helper Functions - Fetch eBay item info - Format time
 function get_ebay_item_info($item_id) {
-    global $env_ebay;
-
-    $devID     = $env_ebay['EBAY_DEV_ID'];
-    $appID     = $env_ebay['EBAY_PRODUCTION_APPID'];
-    $certID    = $env_ebay['EBAY_CLIENT_SECRET'];
-    $userToken = $env_ebay['EBAY_AUTH_TOKEN']; // eBay user token (if using Auth'n'Auth)
-    $endpoint  = 'https://api.ebay.com/ws/api.dll'; 
-
-    $xml_request = '<?xml version="1.0" encoding="utf-8"?>
-    <GetItemRequest xmlns="urn:ebay:apis:eBLBaseComponents">
-      <RequesterCredentials>
-        <eBayAuthToken>' . $userToken . '</eBayAuthToken>
-      </RequesterCredentials>
-      <ItemID>' . $item_id . '</ItemID>
-      <DetailLevel>ReturnAll</DetailLevel>
-      <IncludeItemSpecifics>true</IncludeItemSpecifics>
-    </GetItemRequest>';
-
-    $headers = [
-        'X-EBAY-API-CALL-NAME'      => 'GetItem',
-        'X-EBAY-API-SITEID'         => '0',
-        'X-EBAY-API-COMPATIBILITY-LEVEL' => '967',
-        'X-EBAY-API-DEV-NAME'       => $devID,
-        'X-EBAY-API-APP-NAME'       => $appID,
-        'X-EBAY-API-CERT-NAME'      => $certID,
-        'Content-Type'              => 'text/xml'
-    ];
-
-    $response = wp_remote_post($endpoint, [
-        'headers' => $headers,
-        'body'    => $xml_request
-    ]);
-
-    if (is_wp_error($response)) {
-        return ['error' => $response->get_error_message()];
-    }
-
-    $body = wp_remote_retrieve_body($response);
-    $xml  = simplexml_load_string($body);
+    $xml = tcs_get_cached_ebay_item_xml($item_id);
+    if (is_wp_error($xml)) return ['error' => $xml->get_error_message()];
     $itemList = $xml->Item->ItemSpecifics->NameValueList;
-
-    if ($xml->Ack != 'Success') {
-        return ['error' => (string) $xml->Errors->LongMessage];
-    }
 
      $item_specifics = [];
    
@@ -517,5 +505,6 @@ function format_time_remaining($end_time) {
     $minutes = floor(($diff % 3600) / 60);
     return "{$hours}h {$minutes}m";
 }
+
 
 

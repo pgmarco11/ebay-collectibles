@@ -10,55 +10,7 @@ function tcs_ebay_acquire_lock($name, $seconds = 60) {
 
 /** Shared Browse request budget/backoff for the eBay shortcodes. */
 function tcs_ebay_shortcode_browse_get($url, $args) {
-    $cooldown = (int) get_option('tcs_ebay_browse_cooldown', 0);
-    if ($cooldown > time()) {
-        return new WP_Error('tcs_ebay_rate_backoff', 'eBay listing requests are temporarily paused.');
-    }
-
-    $lock = 'tcs_ebay_browse_budget_lock';
-    if (!tcs_ebay_acquire_lock($lock, 10)) {
-        return new WP_Error('tcs_ebay_budget_busy', 'Another request is reserving an eBay API call.');
-    }
-
-    try {
-        // Retain 25 hourly buckets: a conservative ceiling for any trailing 24 hours.
-        $hour = (int) floor(time() / HOUR_IN_SECONDS);
-        $buckets = get_option('tcs_ebay_shortcode_browse_calls', []);
-        $buckets = is_array($buckets) ? $buckets : [];
-        foreach ($buckets as $bucket => $count) {
-            if ((int) $bucket < $hour - 24) {
-                unset($buckets[$bucket]);
-            }
-        }
-        // Leave room under the published default for other application requests.
-        if (array_sum($buckets) >= 4000) {
-            return new WP_Error('tcs_ebay_local_budget', 'The shortcode Browse API budget has been reached.');
-        }
-        $buckets[$hour] = (int) ($buckets[$hour] ?? 0) + 1;
-        update_option('tcs_ebay_shortcode_browse_calls', $buckets, false);
-    } finally {
-        delete_option($lock);
-    }
-
-    $response = wp_remote_get($url, $args);
-    if (is_wp_error($response)) {
-        return $response;
-    }
-
-    $status = wp_remote_retrieve_response_code($response);
-    $body = wp_remote_retrieve_body($response);
-    if (
-        $status === 429 ||
-        ($status === 403 && preg_match('/rate.?limit|call.?limit|quota/i', $body))
-    ) {
-        $retry = trim((string) wp_remote_retrieve_header($response, 'retry-after'));
-        $retry_date = $retry !== '' && !preg_match('/^\d+$/', $retry) ? strtotime($retry) : false;
-        $wait = preg_match('/^\d+$/', $retry)
-            ? max(60, (int) $retry)
-            : ($retry_date ? max(60, $retry_date - time()) : HOUR_IN_SECONDS);
-        update_option('tcs_ebay_browse_cooldown', time() + $wait, false);
-    }
-    return $response;
+    return TCS_Ebay_API_Client::request('browse', $url, $args);
 }
 
 /** Editor rendering should not trigger external listing requests. */
@@ -127,7 +79,7 @@ function get_ebay_category_id_from_slug($slug) {
     $query = rawurlencode(str_replace('-', ' ', $slug));
     $url = "https://api.ebay.com/commerce/taxonomy/v1/category_tree/0/get_category_suggestions?q=$query";
 
-    $response = wp_remote_get($url, [
+    $response = TCS_Ebay_API_Client::request('taxonomy', $url, [
         'headers' => [
             'Authorization' => 'Bearer ' . $access_token,
             'Accept'        => 'application/json',
@@ -180,7 +132,8 @@ function get_ebay_user_info($username) {
 </GetUserRequest>
 XML;
 
-    $response = wp_remote_post('https://api.ebay.com/ws/api.dll', [
+    $response = TCS_Ebay_API_Client::request('trading', 'https://api.ebay.com/ws/api.dll', [
+        'method' => 'POST',
         'headers' => [
             'X-EBAY-API-CALL-NAME'   => 'GetUser',
             'X-EBAY-API-COMPATIBILITY-LEVEL' => '967',
@@ -1484,4 +1437,5 @@ add_shortcode(
     'ebay_top_items',
     'tcs_render_ebay_top_items_shortcode'
 );
+
 

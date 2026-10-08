@@ -4,75 +4,34 @@ function fetch_ebay_buy_it_now_collectibles() {
     global $env_ebay;
 
     // Check cache first
-    $cached = get_transient('ebay_buy_it_now_cache');
+    $cached = get_transient('ebay_buy_it_now_cache_v2');
     if ($cached !== false && !empty($cached)) {
         error_log("Returning cached eBay Buy It Now data: " . json_encode($cached, JSON_PRETTY_PRINT));
         return $cached;
     }
 
-    $auth_token = $env_ebay['EBAY_AUTH_TOKEN'];
+    $auth_token = $env_ebay['EBAY_AUTH_TOKEN'] ?? '';
 
     if (empty($auth_token)) {
         error_log("Error: Missing EBAY_AUTH_TOKEN in ebay.env");
         return false;
     }
 
-    $endpoint = "https://api.ebay.com/ws/api.dll";
-    $xml_request = '<?xml version="1.0" encoding="utf-8"?>
-        <GetMyeBaySellingRequest xmlns="urn:ebay:apis:eBLBaseComponents">
-            <RequesterCredentials>
-                <eBayAuthToken>' . htmlspecialchars($auth_token, ENT_XML1) . '</eBayAuthToken>
-            </RequesterCredentials>
-            <ActiveList>
-                <Sort>TimeLeft</Sort>
-                <Pagination>
-                    <EntriesPerPage>100</EntriesPerPage>
-                    <PageNumber>1</PageNumber>
-                </Pagination>
-            </ActiveList>
-            <DetailLevel>ReturnAll</DetailLevel>
-            <IncludeItemSpecifics>true</IncludeItemSpecifics>
-        </GetMyeBaySellingRequest>';
-
-    $response = wp_remote_post($endpoint, array(
-        'headers' => array(
-            'X-EBAY-API-COMPATIBILITY-LEVEL' => '967',
-            'X-EBAY-API-CALL-NAME' => 'GetMyeBaySelling',
-            'X-EBAY-API-SITEID' => '0',
-            'Content-Type' => 'text/xml',
-        ),
-        'body' => $xml_request,
-        'timeout' => 15,
-    ));
-
-    if (is_wp_error($response)) {
-        error_log("eBay Buy It Now API Error: " . $response->get_error_message());
-        return false;
-    }
-
-    $body = wp_remote_retrieve_body($response);
-    $xml = simplexml_load_string($body);
-
-    if (!$xml || $xml->Ack != 'Success') {
-        if ($xml && (string)$xml->Errors->ErrorCode === '932') {
-            error_log("eBay API Failure: Token expired - " . $body);
-            return 'token_expired';
-        }
-        error_log("eBay API Failure: " . $body);
-        return false;
-    }
+    $pages = tcs_get_cached_ebay_selling_pages();
+    if (is_wp_error($pages)) return ['error' => $pages->get_error_message()];
+    $xml = $pages[0];
 
     $data = array('items' => []);
 
-    if (isset($xml->ActiveList->ItemArray->Item)) {
-        foreach ($xml->ActiveList->ItemArray->Item as $item) {
+    if (tcs_ebay_selling_items($pages)) {
+        foreach (tcs_ebay_selling_items($pages) as $item) {
 
             $item_id = (string)$item->ItemID;
     
             if ((string)$item->ListingType === 'FixedPriceItem') {
                 $category_name = get_item_category($item->ItemID, $auth_token); 
                 if (!$category_name) {
-                    $category_name = 'Collectibles';    
+                    return ['error' => 'Could not fetch a Buy It Now item category. Existing posts were preserved.'];    
                 }
     
                 // Improved image URL extraction
@@ -82,10 +41,10 @@ function fetch_ebay_buy_it_now_collectibles() {
                  // Fetch description via GetItem if missing
                 if ($item_description === '') {            
                     $item_details = get_item_details($item_id, $auth_token);
-                    if ($item_details !== 'Not available') {                   
+                    if (is_array($item_details)) {                   
                         $item_description = $item_details['description'];                
                     } else {
-                        error_log("Failed to fetch description via GetItem for ItemID $item_id");
+                        return ['error' => 'Could not fetch complete Buy It Now item details. Existing posts were preserved.'];
                     }
                 }
                 
@@ -115,15 +74,17 @@ function fetch_ebay_buy_it_now_collectibles() {
         }
     }
 
-    set_transient('ebay_buy_it_now_cache', $data, 12 * 3600);
+    set_transient('ebay_buy_it_now_cache_v2', $data, 15 * MINUTE_IN_SECONDS);
     return $data;
 }
 
 
-function create_buy_it_now_posts() { 
+function create_buy_it_now_posts($force = false) {
+    return tcs_run_ebay_import('buynow', $force);
+}
 
-    // Clear cache to ensure fresh data
-    delete_transient('ebay_buy_it_now_cache');
+function create_buy_it_now_posts_unlocked() { 
+
 
     $items = fetch_ebay_buy_it_now_collectibles();
 
@@ -524,5 +485,6 @@ function ebay_buy_it_now_shortcode($atts) {
     return ob_get_clean();
 }
 add_shortcode('ebay_buy_it_now', 'ebay_buy_it_now_shortcode');
+
 
 

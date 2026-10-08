@@ -118,7 +118,7 @@ jQuery(function ($) {
                 }
             });
     
-            addMeta('Type', labels.join(' · '));
+            addMeta('Type', labels.join(' Â· '));
         }
     
         addMeta(
@@ -178,9 +178,9 @@ jQuery(function ($) {
 
         $searchButton
             .prop('disabled', true)
-            .text('Searching…');
+            .text('Searchingâ€¦');
 
-        $searchMessage.text('Searching eBay…');
+        $searchMessage.text('Searching eBayâ€¦');
         $searchResults.empty();
 
         $.ajax({
@@ -273,17 +273,18 @@ jQuery(function ($) {
 
         $('#check-item')
             .prop('disabled', true)
-            .text('Checking…');
+            .text('Checkingâ€¦');
 
         $itemDetails.html(
-            '<p>Loading item details…</p>'
+            '<p>Loading item detailsâ€¦</p>'
         );
 
         $.get(
             ebay_ajax_obj.ajax_url,
             {
                 action: 'get_ebay_item_details',
-                item_id: itemId
+                item_id: itemId,
+                nonce: ebay_ajax_obj.nonce
             }
         )
             .done(function (response) {

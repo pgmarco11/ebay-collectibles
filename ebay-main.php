@@ -27,6 +27,9 @@ function ebay_load_env_file($file_path) {
 $env_file = plugin_dir_path(__FILE__) . 'ebay.env';
 $env_ebay = ebay_load_env_file($env_file);
 
+require_once plugin_dir_path(__FILE__) . 'includes/class-tcs-ebay-api-client.php';
+require_once plugin_dir_path(__FILE__) . 'includes/ebay-api-cache.php';
+
 // Load the files
 $files = [
     'ebay-auctions.php',
@@ -89,16 +92,20 @@ function ebay_admin_page() {
     if (isset($_POST['ebay_refresh'])) {
         check_admin_referer('ebay_refresh_action');
         ob_start();
-        create_auction_posts();
-        $message = '<div class="notice notice-success"><p>eBay Auctions refreshed successfully.</p></div>';
-        ob_end_clean();
+        $result = create_auction_posts(true);
+        $message = ob_get_clean();
+        if (!is_wp_error($result) && $message === '') {
+            $message = '<div class="notice notice-success"><p>eBay Auctions refreshed.</p></div>';
+        }
     }
     if (isset($_POST['ebay_buy_it_now_refresh'])) {
         check_admin_referer('ebay_buy_it_now_refresh_action');
         ob_start();
-        create_buy_it_now_posts();
-        $message = '<div class="notice notice-success"><p>eBay Buy It Now Items refreshed successfully.</p></div>';
-        ob_end_clean();
+        $result = create_buy_it_now_posts(true);
+        $message = ob_get_clean();
+        if (!is_wp_error($result) && $message === '') {
+            $message = '<div class="notice notice-success"><p>eBay Buy It Now Items refreshed.</p></div>';
+        }
     }
 
     ?>
@@ -134,9 +141,10 @@ function register_ebay_refresh_action() {
             );
         }
         ob_start();
-        create_auction_posts();
+        $result = create_auction_posts(true);
         ob_end_clean();
-        wp_redirect(admin_url('admin.php?page=ebay-inventory&message=auction_refreshed'));
+        $refresh_status = is_wp_error($result) ? 'auction_failed' : 'auction_refreshed';
+        wp_redirect(admin_url('admin.php?page=ebay-inventory&message=' . $refresh_status));
         exit;
     }
 }
@@ -150,6 +158,9 @@ add_filter('query_vars', 'ebay_add_query_vars');
 
 function ebay_admin_notices() {
     if (get_current_screen()->id === 'toplevel_page_ebay-inventory' && isset($_GET['message'])) {
+        if ($_GET['message'] === 'auction_failed') {
+            echo '<div class="notice notice-error"><p>eBay refresh could not complete. Existing posts were preserved. Try again later.</p></div>';
+        }
         if ($_GET['message'] === 'auction_refreshed') {
             echo '<div class="notice notice-success is-dismissible"><p>eBay Auctions refreshed successfully via URL trigger.</p></div>';
         }
@@ -158,47 +169,40 @@ function ebay_admin_notices() {
 add_action('admin_notices', 'ebay_admin_notices');
 function get_ebay_oauth_token() {
     global $env_ebay;
-
+    $cached = get_transient('ebay_oauth_token');
+    if (is_string($cached) && $cached !== '') return $cached;
+    if (get_transient('tcs_ebay_oauth_failure')) return false;
     $client_id = $env_ebay['EBAY_PRODUCTION_APPID'] ?? '';
-    $client_secret = $env_ebay['EBAY_CLIENT_SECRET'] ?? '';
-
-    if (empty($client_id) || empty($client_secret)) {
-        error_log('eBay OAuth: Missing client ID or secret.');
-        return false;
+    $secret = $env_ebay['EBAY_CLIENT_SECRET'] ?? '';
+    if ($client_id === '' || $secret === '') return false;
+    $lock = 'tcs_ebay_oauth_fetch_v1';
+    $owner = TCS_Ebay_API_Client::acquire_lock($lock);
+    if (!$owner) return false;
+    try {
+        $cached = get_transient('ebay_oauth_token');
+        if (is_string($cached) && $cached !== '') return $cached;
+        $response = TCS_Ebay_API_Client::request('oauth', 'https://api.ebay.com/identity/v1/oauth2/token', [
+            'method' => 'POST',
+            'headers' => ['Authorization' => 'Basic ' . base64_encode($client_id . ':' . $secret), 'Content-Type' => 'application/x-www-form-urlencoded'],
+            'body' => ['grant_type' => 'client_credentials', 'scope' => 'https://api.ebay.com/oauth/api_scope'],
+            'timeout' => 10,
+        ]);
+        if (is_wp_error($response) || wp_remote_retrieve_response_code($response) !== 200) {
+            set_transient('tcs_ebay_oauth_failure', true, MINUTE_IN_SECONDS);
+            return false;
+        }
+        $body = json_decode(wp_remote_retrieve_body($response), true);
+        $lifetime = (int) ($body['expires_in'] ?? 0);
+        if (empty($body['access_token']) || $lifetime <= 1) {
+            set_transient('tcs_ebay_oauth_failure', true, MINUTE_IN_SECONDS);
+            return false;
+        }
+        $margin = min(300, max(1, (int) floor($lifetime / 10)));
+        set_transient('ebay_oauth_token', $body['access_token'], max(1, $lifetime - $margin));
+        return $body['access_token'];
+    } finally {
+        TCS_Ebay_API_Client::release_lock($lock, $owner);
     }
-
-    $cached_token = get_transient('ebay_oauth_token');
-    if ($cached_token !== false) {
-        return $cached_token;
-    }
-
-    $encoded_credentials = base64_encode("$client_id:$client_secret");
-
-    $response = wp_remote_post('https://api.ebay.com/identity/v1/oauth2/token', [
-        'headers' => [
-            'Authorization' => 'Basic ' . $encoded_credentials,
-            'Content-Type'  => 'application/x-www-form-urlencoded',
-        ],
-        'body' => [
-            'grant_type'   => 'client_credentials',
-            'scope'        => 'https://api.ebay.com/oauth/api_scope',
-        ],
-        'timeout' => 10, // Add timeout to prevent hanging
-    ]);
-
-    if (is_wp_error($response)) {
-        error_log('eBay OAuth API error: ' . $response->get_error_message());
-        return false;
-    }
-
-    $body = json_decode(wp_remote_retrieve_body($response), true);
-    if (empty($body['access_token'])) {
-        error_log('eBay OAuth: No access token received.');
-        return false;
-    }
-
-    set_transient('ebay_oauth_token', $body['access_token'], max(300, $body['expires_in'] - 300));
-    return $body['access_token'];
 }
 
 // Add basic styling

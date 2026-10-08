@@ -1,48 +1,12 @@
 <?php
 
-function get_item_details($item_id, $auth_token) {
-    $endpoint = "https://api.ebay.com/ws/api.dll";
-    $xml_request = '<?xml version="1.0" encoding="utf-8"?>
-        <GetItemRequest xmlns="urn:ebay:apis:eBLBaseComponents">
-            <RequesterCredentials>
-                <eBayAuthToken>' . htmlspecialchars($auth_token, ENT_XML1) . '</eBayAuthToken>
-            </RequesterCredentials>
-            <ItemID>' . esc_xml($item_id) . '</ItemID>
-            <DetailLevel>ReturnAll</DetailLevel>
-            <IncludeItemSpecifics>true</IncludeItemSpecifics>
-        </GetItemRequest>';
-
-    $response = wp_remote_post($endpoint, array(
-        'headers' => array(
-            'X-EBAY-API-COMPATIBILITY-LEVEL' => '967',
-            'X-EBAY-API-CALL-NAME' => 'GetItem',
-            'X-EBAY-API-SITEID' => '0',
-            'Content-Type' => 'text/xml',
-        ),
-        'body' => $xml_request,
-        'timeout' => 15,
-    ));
-
-    if (is_wp_error($response)) {
-        $error_message = $response->get_error_message();
-        error_log("GetItem API Error for Item $item_id: " . $error_message);
-        return false;
-    }
-
-    $body = wp_remote_retrieve_body($response);
-    $xml = simplexml_load_string($body, 'SimpleXMLElement', LIBXML_NOCDATA);
-
-    if ($xml && $xml->Ack == 'Success') {
-        $end_time = isset($xml->Item->ListingDetails->EndTime) ? (string)$xml->Item->ListingDetails->EndTime : 'Not available';
-        $description = isset($xml->Item->Description) ? (string)$xml->Item->Description : '';
-        return [
-            'endTime' => $end_time,
-            'description' => $description,
-        ];
-    }
-
-    error_log("GetItem failed for Item $item_id: Ack = " . ($xml->Ack ?? 'No Ack'));
-    return false;
+function get_item_details($item_id, $auth_token = '') {
+    $xml = tcs_get_cached_ebay_item_xml($item_id);
+    if (is_wp_error($xml)) return false;
+    return [
+        'endTime' => (string) $xml->Item->ListingDetails->EndTime ?: 'Not available',
+        'description' => (string) $xml->Item->Description,
+    ];
 }
 function fetch_ebay_auctions() {
     global $env_ebay;
@@ -51,7 +15,7 @@ function fetch_ebay_auctions() {
     // delete_transient('ebay_auctions_cache');
 
     // Check cache first
-    $cached = get_transient('ebay_auctions_cache');
+    $cached = get_transient('ebay_auctions_cache_v2');
     if ($cached !== false && !empty($cached)) {
         return $cached;
     }
@@ -63,61 +27,15 @@ function fetch_ebay_auctions() {
         return ['error' => 'Missing EBAY_AUTH_TOKEN in ebay.env'];
     }
 
-    $endpoint = "https://api.ebay.com/ws/api.dll";
-    $xml_request = '<?xml version="1.0" encoding="utf-8"?>
-        <GetMyeBaySellingRequest xmlns="urn:ebay:apis:eBLBaseComponents">
-            <RequesterCredentials>
-                <eBayAuthToken>' . htmlspecialchars($auth_token, ENT_XML1) . '</eBayAuthToken>
-            </RequesterCredentials>
-            <ActiveList>
-                <Sort>TimeLeft</Sort>
-                <Pagination>
-                    <EntriesPerPage>100</EntriesPerPage>
-                    <PageNumber>1</PageNumber>
-                </Pagination>
-            </ActiveList>
-            <DetailLevel>ReturnAll</DetailLevel>
-            <IncludeItemSpecifics>true</IncludeItemSpecifics>
-        </GetMyeBaySellingRequest>';
-
-    $response = wp_remote_post($endpoint, array(
-        'headers' => array(
-            'X-EBAY-API-COMPATIBILITY-LEVEL' => '967',
-            'X-EBAY-API-CALL-NAME' => 'GetMyeBaySelling',
-            'X-EBAY-API-SITEID' => '0',
-            'Content-Type' => 'text/xml',
-        ),
-        'body' => $xml_request,
-        'timeout' => 15,
-    ));
-
-    if (is_wp_error($response)) {
-        $error_message = $response->get_error_message();
-        error_log("eBay Trading API Error: " . $error_message);
-        return ['error' => "API request failed: $error_message"];
-    }
-
-    $body = wp_remote_retrieve_body($response);
-    $xml = simplexml_load_string($body, 'SimpleXMLElement', LIBXML_NOCDATA);
-
-    if (!$xml) {   
-        return ['error' => 'Failed to parse XML response', 'response' => $body];
-    }
-
-    if ($xml->Ack != 'Success') {
-        $error_details = $xml->Errors ? (string)$xml->Errors->LongMessage : 'Unknown error';
-        if ((string)$xml->Errors->ErrorCode === '932') {        
-            return ['error' => 'Token expired', 'details' => $error_details];
-        }
-        error_log("eBay API Failure: " . $body);
-        return ['error' => 'API call failed', 'details' => $error_details, 'response' => $body];
-    }
+    $pages = tcs_get_cached_ebay_selling_pages();
+    if (is_wp_error($pages)) return ['error' => $pages->get_error_message()];
+    $xml = $pages[0];
 
     $data = array('items' => []);
 
-    if (isset($xml->ActiveList->ItemArray->Item)) {
+    if (tcs_ebay_selling_items($pages)) {
         error_log("Found " . count($xml->ActiveList->ItemArray->Item) . " items in ActiveList");
-        foreach ($xml->ActiveList->ItemArray->Item as $item) {
+        foreach (tcs_ebay_selling_items($pages) as $item) {
             $item_id = (string)$item->ItemID;
             $listing_type = (string)$item->ListingType;
             $title = (string)$item->Title;   
@@ -134,7 +52,7 @@ function fetch_ebay_auctions() {
             error_log("EndTime for ItemID $item_id: $end_time");
 
             // Fetch EndTime via GetItem if missing and listing is auction-style
-            if ($end_time === 'Not available' && stripos($listing_type, 'Auction') !== false || $listing_type === 'Chinese') {
+            if ($end_time === 'Not available' && (stripos($listing_type, 'Auction') !== false || $listing_type === 'Chinese')) {
                 error_log("Attempting GetItem call for ItemID $item_id due to missing EndTime");
                 $item_details = get_item_details($item_id, $auth_token);
                 if ($item_details && $item_details['endTime'] !== 'Not available') {
@@ -142,7 +60,7 @@ function fetch_ebay_auctions() {
                     $item_description = $item_details['description'];              
                     error_log("Fetched EndTime via GetItem for ItemID $item_id: $end_time");
                 } else {
-                    error_log("Failed to fetch EndTime via GetItem for ItemID $item_id");
+                    return ['error' => 'Could not fetch complete auction item details. Existing posts were preserved.'];
                 }
             }
 
@@ -157,7 +75,7 @@ function fetch_ebay_auctions() {
             if (stripos($listing_type, 'Auction') !== false || $listing_type === 'Chinese') {
                 $category_name = get_item_category($item->ItemID, $auth_token);
                 if (!$category_name) {
-                    $category_name = 'Auctions';
+                    return ['error' => 'Could not fetch an auction item category. Existing posts were preserved.'];
                 }
 
                 // Improved image URL extraction
@@ -195,46 +113,14 @@ function fetch_ebay_auctions() {
         error_log("No items found in ActiveList->ItemArray->Item");
     }
 
-    set_transient('ebay_auctions_cache', $data, 12 * 3600);
+    set_transient('ebay_auctions_cache_v2', $data, 5 * MINUTE_IN_SECONDS);
     return $data;
 }
 
-function get_item_category($item_id, $auth_token) {
-    $endpoint = "https://api.ebay.com/ws/api.dll";
-    $xml_request = '<?xml version="1.0" encoding="utf-8"?>
-        <GetItemRequest xmlns="urn:ebay:apis:eBLBaseComponents">
-            <RequesterCredentials>
-                <eBayAuthToken>' . htmlspecialchars($auth_token, ENT_XML1) . '</eBayAuthToken>
-            </RequesterCredentials>
-            <ItemID>' . esc_xml($item_id) . '</ItemID>
-            <DetailLevel>ReturnAll</DetailLevel>
-            <IncludeItemSpecifics>true</IncludeItemSpecifics>
-        </GetItemRequest>';
-
-    $response = wp_remote_post($endpoint, array(
-        'headers' => array(
-            'X-EBAY-API-COMPATIBILITY-LEVEL' => '967',
-            'X-EBAY-API-CALL-NAME' => 'GetItem',
-            'X-EBAY-API-SITEID' => '0',
-            'Content-Type' => 'text/xml',
-        ),
-        'body' => $xml_request,
-        'timeout' => 15,
-    ));
-
-    if (is_wp_error($response)) {
-        $error_message = $response->get_error_message();
-        error_log("GetItem API Error for Item $item_id: " . $error_message);
-        return false;
-    }
-
-    $body = wp_remote_retrieve_body($response);
-    $xml = simplexml_load_string($body);
-
-    if ($xml && $xml->Ack == 'Success' && isset($xml->Item->PrimaryCategory->CategoryName)) {
-        return (string)$xml->Item->PrimaryCategory->CategoryName;
-    }
-    return false;
+function get_item_category($item_id, $auth_token = '') {
+    $xml = tcs_get_cached_ebay_item_xml($item_id);
+    if (is_wp_error($xml)) return false;
+    return (string) $xml->Item->PrimaryCategory->CategoryName ?: false;
 }
 
 /**
@@ -376,7 +262,11 @@ function set_featured_image_from_url($post_id, $image_url) {
     );
 }
 
-function create_auction_posts() {
+function create_auction_posts($force = false) {
+    return tcs_run_ebay_import('auction', $force);
+}
+
+function create_auction_posts_unlocked() {
 
         // Delete expired auction posts
         // Get the "Auctions" category
@@ -873,3 +763,4 @@ add_action('wp_enqueue_scripts', function() {
     ';
     wp_add_inline_script('owl-carousel', $inline_script);
 });
+
