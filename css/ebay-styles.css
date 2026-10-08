@@ -113,7 +113,17 @@
     position: relative;
     padding: 1rem 2rem 0;
     
-    & p { font-weight: 500; color: var(--ebay-text-white); text-align: left; }
+    & p { 
+        font-weight: 600; 
+        color: var(--ebay-text-white); 
+        text-align: left; 
+        font-size: 1.2rem;
+
+        strong { 
+            font-weight: 800;
+            letter-spacing: .08rem; 
+        }
+    }
     & .owl-item {
       min-height: 430px;
       display: flex;

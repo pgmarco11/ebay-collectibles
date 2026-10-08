@@ -506,7 +506,7 @@ function ebay_buy_it_now_shortcode($atts) {
                     </div>
                     <div class="item-details d-flex justify-content-evenly mt-3">
                         <div class="justify-content-center">
-                            <p><strong> Price: $<?php echo esc_html($price); ?></strong></p>             
+                            <p><strong> Price: </strong>$<?php echo esc_html($price); ?></p>             
                         </div> 
                     </div>
     
