@@ -207,6 +207,8 @@ function tcs_get_cached_ebay_selling_pages() {
             return $validation;
         }
 
+        set_transient($key, $raw_pages, MINUTE_IN_SECONDS);
+        
         return $pages;
     } finally {
         TCS_Ebay_API_Client::release_lock($lock, $owner);

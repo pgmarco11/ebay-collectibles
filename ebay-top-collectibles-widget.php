@@ -406,7 +406,7 @@ function fetch_ebay_ranked_items($category_slug, $limit = 10, $search_keywords =
         set_transient($cache_key, $result, 5 * MINUTE_IN_SECONDS);
         return $result;
     } finally {
-        delete_option($fetch_lock);
+        TCS_Ebay_API_Client::release_lock($fetch_lock, $owner);
     }
 }
 /**
@@ -925,38 +925,71 @@ function tcs_top_items_group_categories(WP_Term $group) {
     return array_values($leaves);
 }
 
-/*
+/**
  * Fetch Buy It Now candidates for one category.
+ *
+ * Successful results are cached for 15 minutes.
+ * Empty results and failures are cached for 2 minutes.
  */
 function tcs_top_items_buy_now_candidates(
     $phrase,
     $limit,
     $search_keywords = ''
 ) {
+    $phrase = trim((string) $phrase);
+    $search_keywords = trim((string) $search_keywords);
+
+    if ($phrase === '') {
+        return [];
+    }
+
     $limit = max(1, min(200, absint($limit)));
     $fetch_limit = min(200, max(20, $limit * 2));
-    $cache_key = 'tcs_top_bin_v3_' . md5(wp_json_encode([
-        $phrase,
-        $fetch_limit,
-        $search_keywords,
-    ]));
+
+    $cache_key = 'tcs_top_bin_v3_' . md5(
+        wp_json_encode([
+            $phrase,
+            $fetch_limit,
+            $search_keywords,
+        ])
+    );
 
     $active_items = static function ($items) use ($limit) {
         $cutoff = time() + 300;
-        $items = array_filter($items, static function ($item) use ($cutoff) {
-            $end = (int) ($item['endTimeUnix'] ?? 0);
-            return !$end || $end > $cutoff;
-        });
-        return array_slice(array_values($items), 0, $limit);
+
+        $items = array_filter(
+            $items,
+            static function ($item) use ($cutoff) {
+                if (!is_array($item)) {
+                    return false;
+                }
+
+                $end = (int) ($item['endTimeUnix'] ?? 0);
+
+                return !$end || $end > $cutoff;
+            }
+        );
+
+        return array_slice(
+            array_values($items),
+            0,
+            $limit
+        );
     };
 
     $cached = get_transient($cache_key);
+
     if (is_array($cached)) {
         return $active_items($cached);
     }
 
     $cache_empty = static function () use ($cache_key) {
-        set_transient($cache_key, [], 2 * MINUTE_IN_SECONDS);
+        set_transient(
+            $cache_key,
+            [],
+            2 * MINUTE_IN_SECONDS
+        );
+
         return [];
     };
 
@@ -966,24 +999,40 @@ function tcs_top_items_buy_now_candidates(
     if (!$owner) {
         return [];
     }
+
     try {
+        // Another request may have populated the cache
+        // between our initial check and acquiring the lock.
+        $cached = get_transient($cache_key);
+
+        if (is_array($cached)) {
+            return $active_items($cached);
+        }
+
         $category_id = get_ebay_category_id_from_slug($phrase);
-        $token = get_transient('ebay_oauth_token') ?: get_ebay_oauth_token();
+        $token = get_transient('ebay_oauth_token')
+            ?: get_ebay_oauth_token();
+
         if (!$category_id || !$token) {
             return $cache_empty();
         }
 
         $params = [
             'category_ids' => $category_id,
-            'limit' => $fetch_limit,
-            'filter' => 'buyingOptions:{FIXED_PRICE},price:[3..],priceCurrency:USD',
+            'limit'        => $fetch_limit,
+            'filter'       =>
+                'buyingOptions:{FIXED_PRICE},price:[3..],priceCurrency:USD',
         ];
+
         if ($search_keywords !== '') {
             $params['q'] = $search_keywords;
         }
 
         $response = tcs_ebay_shortcode_browse_get(
-            add_query_arg($params, 'https://api.ebay.com/buy/browse/v1/item_summary/search'),
+            add_query_arg(
+                $params,
+                'https://api.ebay.com/buy/browse/v1/item_summary/search'
+            ),
             [
                 'headers' => [
                     'Authorization' => 'Bearer ' . $token,
@@ -994,41 +1043,95 @@ function tcs_top_items_buy_now_candidates(
             ]
         );
 
-        if (is_wp_error($response) || wp_remote_retrieve_response_code($response) !== 200) {
+        if (
+            is_wp_error($response) ||
+            wp_remote_retrieve_response_code($response) !== 200
+        ) {
             return $cache_empty();
         }
 
-        $body = json_decode(wp_remote_retrieve_body($response), true);
-        if (!is_array($body)) {
+        $body = json_decode(
+            wp_remote_retrieve_body($response),
+            true
+        );
+
+        if (
+            json_last_error() !== JSON_ERROR_NONE ||
+            !is_array($body) ||
+            !empty($body['errors'])
+        ) {
+            return $cache_empty();
+        }
+
+        $summaries = $body['itemSummaries'] ?? [];
+
+        if (!is_array($summaries)) {
             return $cache_empty();
         }
 
         $items = [];
-        foreach ($body['itemSummaries'] ?? [] as $raw) {
-            $options = $raw['buyingOptions'] ?? [];
-            if (!in_array('FIXED_PRICE', $options, true) || in_array('AUCTION', $options, true)) {
+        $cutoff = time() + 300;
+
+        foreach ($summaries as $raw) {
+            if (!is_array($raw)) {
                 continue;
             }
 
-            $end = !empty($raw['itemEndDate']) ? strtotime($raw['itemEndDate']) : null;
-            if (!empty($raw['itemEndDate']) && (!$end || $end <= time() + 300)) {
+            $options = $raw['buyingOptions'] ?? [];
+
+            if (
+                !is_array($options) ||
+                !in_array('FIXED_PRICE', $options, true) ||
+                in_array('AUCTION', $options, true)
+            ) {
                 continue;
+            }
+
+            $url = $raw['itemWebUrl'] ?? '';
+
+            if (!is_string($url) || $url === '') {
+                continue;
+            }
+
+            $end = null;
+            $end_date = $raw['itemEndDate'] ?? '';
+
+            if ($end_date !== '') {
+                if (!is_string($end_date)) {
+                    continue;
+                }
+
+                $end = strtotime($end_date);
+
+                if (!$end || $end <= $cutoff) {
+                    continue;
+                }
             }
 
             $items[] = [
                 'title' => $raw['title'] ?? 'Untitled item',
-                'viewItemURL' => $raw['itemWebUrl'] ?? '',
+                'viewItemURL' => $url,
                 'imageURL' => $raw['image']['imageUrl'] ?? '',
-                'price' => (float) ($raw['price']['value'] ?? 0),
+                'price' => (float) (
+                    $raw['price']['value'] ?? 0
+                ),
                 'currency' => $raw['price']['currency'] ?? 'USD',
                 'endTimeUnix' => $end,
             ];
         }
 
-        set_transient($cache_key, $items, ($items ? 15 : 2) * MINUTE_IN_SECONDS);
+        set_transient(
+            $cache_key,
+            $items,
+            ($items ? 15 : 2) * MINUTE_IN_SECONDS
+        );
+
         return $active_items($items);
     } finally {
-        TCS_Ebay_API_Client::release_lock($fetch_lock, $owner);
+        TCS_Ebay_API_Client::release_lock(
+            $fetch_lock,
+            $owner
+        );
     }
 }
 
