@@ -52,15 +52,38 @@ function fetch_ebay_auctions() {
             error_log("EndTime for ItemID $item_id: $end_time");
 
             // Fetch EndTime via GetItem if missing and listing is auction-style
-            if ($end_time === 'Not available' && (stripos($listing_type, 'Auction') !== false || $listing_type === 'Chinese')) {
-                error_log("Attempting GetItem call for ItemID $item_id due to missing EndTime");
-                $item_details = get_item_details($item_id, $auth_token);
-                if ($item_details && $item_details['endTime'] !== 'Not available') {
-                    $end_time = $item_details['endTime'];   
-                    $item_description = $item_details['description'];              
-                    error_log("Fetched EndTime via GetItem for ItemID $item_id: $end_time");
-                } else {
-                    return ['error' => 'Could not fetch complete auction item details. Existing posts were preserved.'];
+            $is_auction = stripos($listing_type, 'Auction') !== false ||
+            $listing_type === 'Chinese';
+        
+            if (
+                $is_auction &&
+                (
+                    $end_time === 'Not available' ||
+                    trim($item_description) === ''
+                )
+            ) {
+                $details = get_item_details($item_id, $auth_token);
+            
+                if (!is_array($details)) {
+                    return [
+                        'error' =>
+                            'Could not fetch auction details. Existing posts were preserved.',
+                    ];
+                }
+            
+                if ($end_time === 'Not available') {
+                    $end_time = $details['endTime'];
+            
+                    if ($end_time === 'Not available') {
+                        return [
+                            'error' =>
+                                'Auction end time is missing. Existing posts were preserved.',
+                        ];
+                    }
+                }
+            
+                if (trim($item_description) === '') {
+                    $item_description = $details['description'];
                 }
             }
 
@@ -266,7 +289,7 @@ function create_auction_posts($force = false) {
     return tcs_run_ebay_import('auction', $force);
 }
 
-function create_auction_posts_unlocked() {
+function create_auction_posts_unlocked($auctions) {
 
         // Delete expired auction posts
         // Get the "Auctions" category
@@ -321,8 +344,7 @@ function create_auction_posts_unlocked() {
                     error_log("Deleted expired auction post ID {$post->ID} with end date $end_date_str");
                 }
             }
-        }
-        $auctions = fetch_ebay_auctions();
+        }   
 
         if (is_array($auctions) && isset($auctions['error'])) {
             echo '<div class="error"><p>' . esc_html($auctions['error']) . '</p>';
@@ -571,7 +593,11 @@ function create_auction_posts_unlocked() {
                             error_log("No featured image for post ID $result, setting new image");
                         } else {
                             // Compare current image URL with eBay image URL
-                            $current_image_url = get_post_meta($result, 'ebay_image_url', true);
+                            $current_image_url = get_post_meta(
+                                $result,
+                                '_ebay_featured_image_url',
+                                true
+                            );
                             if ($current_image_url !== $item['imageURL']) {
                                 $update_image = true; // Image URL has changed, update it
                                 error_log("Image URL changed for post ID $result, updating from $current_image_url to {$item['imageURL']}");
@@ -649,12 +675,19 @@ function ebay_auction_carousel_shortcode($atts) {
         'order'            => $atts['order'],
         'orderby'           => 'date',
         'posts_per_page' => intval($atts['posts_per_page']),
-        'meta_query'     => array(
-            array(
+        'meta_query' => [
+            'relation' => 'AND',
+            [
                 'key'     => 'is_buy_it_now',
-                'compare' => 'NOT EXISTS', // Only auctions, not Buy It Now
-            ),
-        ),
+                'compare' => 'NOT EXISTS',
+            ],
+            [
+                'key'     => 'ebay_end_date',
+                'value'   => gmdate('Y-m-d\TH:i:s\Z'),
+                'compare' => '>',
+                'type'    => 'CHAR',
+            ],
+        ],
     );
 
     $query = new WP_Query($args);

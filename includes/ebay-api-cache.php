@@ -50,12 +50,95 @@ function tcs_get_cached_ebay_item_xml($item_id) {
     }
 }
 
+function tcs_validate_ebay_selling_pages($pages) {
+    $expected_total = null;
+    $seen = [];
+
+    if (!is_array($pages) || !$pages) {
+        return new WP_Error(
+            'tcs_inventory_empty_response',
+            'No inventory pages were received.'
+        );
+    }
+
+    foreach ($pages as $xml) {
+        // Fail safely on warnings until specific harmless warnings
+        // have been reviewed and explicitly allowed.
+        if ((string) $xml->Ack !== 'Success') {
+            return new WP_Error(
+                'tcs_inventory_warning',
+                'eBay reported an inventory warning or error.'
+            );
+        }
+
+        $pagination = $xml->ActiveList->PaginationResult;
+
+        if (
+            !isset($pagination->TotalNumberOfEntries) ||
+            !isset($pagination->TotalNumberOfPages)
+        ) {
+            return new WP_Error(
+                'tcs_inventory_pagination',
+                'Inventory pagination information is missing.'
+            );
+        }
+
+        $total = (int) $pagination->TotalNumberOfEntries;
+        $page_count = max(
+            1,
+            (int) $pagination->TotalNumberOfPages
+        );
+
+        if (
+            $total < 0 ||
+            $page_count !== count($pages) ||
+            ($expected_total !== null && $total !== $expected_total)
+        ) {
+            return new WP_Error(
+                'tcs_inventory_changed',
+                'Inventory changed or pages are missing. Retry later.'
+            );
+        }
+
+        $expected_total = $total;
+
+        if (!isset($xml->ActiveList->ItemArray)) {
+            continue;
+        }
+
+        foreach ($xml->ActiveList->ItemArray->Item as $item) {
+            $id = (string) $item->ItemID;
+
+            if (
+                !preg_match('/^\d{9,20}$/', $id) ||
+                isset($seen[$id])
+            ) {
+                return new WP_Error(
+                    'tcs_inventory_duplicate',
+                    'Inventory contains an invalid or duplicate item.'
+                );
+            }
+
+            $seen[$id] = true;
+        }
+    }
+
+    if (count($seen) !== $expected_total) {
+        return new WP_Error(
+            'tcs_inventory_incomplete',
+            'Inventory is incomplete. Existing posts were preserved.'
+        );
+    }
+
+    return true;
+}
+
 /** Fetch every seller-inventory page before imports change or remove any posts. */
 function tcs_get_cached_ebay_selling_pages() {
     global $env_ebay;
     $token = (string) ($env_ebay['EBAY_AUTH_TOKEN'] ?? '');
     if ($token === '') return new WP_Error('tcs_ebay_auth', 'The eBay seller token is missing.');
-    $key = 'tcs_ebay_selling_pages_v1_' . md5($token);
+    $key = 'tcs_ebay_selling_pages_v2_' . md5($token);
     $cached = get_transient($key);
     if (is_array($cached) && isset($cached['error'])) {
         return new WP_Error('tcs_ebay_inventory_failed', $cached['error']);
@@ -112,8 +195,18 @@ function tcs_get_cached_ebay_selling_pages() {
             }
             $pages[] = $xml; $raw_pages[] = $raw;
         }
-        // Coalesce adjacent auction and Buy It Now imports.
-        set_transient($key, $raw_pages, MINUTE_IN_SECONDS);
+        $validation = tcs_validate_ebay_selling_pages($pages);
+
+        if (is_wp_error($validation)) {
+            set_transient(
+                $key,
+                ['error' => $validation->get_error_message()],
+                MINUTE_IN_SECONDS
+            );
+
+            return $validation;
+        }
+
         return $pages;
     } finally {
         TCS_Ebay_API_Client::release_lock($lock, $owner);
@@ -141,7 +234,7 @@ function tcs_run_ebay_import($type, $force = false) {
         return $error;
     }
     try {
-        $cache = $type === 'auction' ? 'ebay_auctions_cache_v2' : 'ebay_buy_it_now_cache_v2';
+        $cache = $type === 'auction' ? 'ebay_auctions_cache_v3' : 'ebay_buy_it_now_cache_v3';
         if ($force) delete_transient($cache);
         $items = $type === 'auction' ? fetch_ebay_auctions() : fetch_ebay_buy_it_now_collectibles();
         if (!is_array($items) || isset($items['error']) || !array_key_exists('items', $items)) {
@@ -155,8 +248,25 @@ function tcs_run_ebay_import($type, $force = false) {
             echo '<div class="notice notice-warning"><p>No active listings of this type were found. Existing posts were preserved.</p></div>';
             return true;
         }
-        if ($type === 'auction') create_auction_posts_unlocked();
-        else create_buy_it_now_posts_unlocked();
+        $result = $type === 'auction'
+            ? create_auction_posts_unlocked($items)
+            : create_buy_it_now_posts_unlocked($items);
+        
+        if (is_wp_error($result)) {
+            echo '<div class="notice notice-error"><p>' .
+                esc_html($result->get_error_message()) .
+                '</p></div>';
+        
+            return $result;
+        }
+        
+        if ($result !== true) {
+            return new WP_Error(
+                'tcs_import_no_result',
+                'The import did not finish successfully.'
+            );
+        }
+        
         return true;
     } finally {
         TCS_Ebay_API_Client::release_lock($lock, $owner);

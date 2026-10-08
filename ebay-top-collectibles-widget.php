@@ -1,13 +1,4 @@
 <?php
-/** Reserve a listing fetch atomically; expired locks recover after interrupted requests. */
-function tcs_ebay_acquire_lock($name, $seconds = 60) {
-    $expires = (int) get_option($name, 0);
-    if ($expires && $expires < time()) {
-        delete_option($name);
-    }
-    return add_option($name, time() + $seconds, '', false);
-}
-
 /** Shared Browse request budget/backoff for the eBay shortcodes. */
 function tcs_ebay_shortcode_browse_get($url, $args) {
     return TCS_Ebay_API_Client::request('browse', $url, $args);
@@ -64,7 +55,7 @@ function get_ebay_category_id_from_slug($slug) {
         return false;
     }
 
-    $cache_key = 'ebay_cat_trail_v2_' . md5($slug);
+    $cache_key = 'ebay_cat_trail_v3_' . md5($slug);
     $cached_cat_id = get_transient($cache_key);
     if ($cached_cat_id !== false || get_transient($cache_key . '_empty')) {
         return $cached_cat_id;
@@ -72,7 +63,7 @@ function get_ebay_category_id_from_slug($slug) {
 
     $access_token = get_transient('ebay_oauth_token') ?: get_ebay_oauth_token();
     if (!$access_token) {
-        set_transient($cache_key . '_empty', true, HOUR_IN_SECONDS);
+        set_transient($cache_key . '_empty', true, MINUTE_IN_SECONDS);
         return false;
     }
 
@@ -89,15 +80,41 @@ function get_ebay_category_id_from_slug($slug) {
 
     if (is_wp_error($response)) {
         error_log('eBay Category API error: ' . $response->get_error_message());
-        set_transient($cache_key . '_empty', true, HOUR_IN_SECONDS);
+        set_transient($cache_key . '_empty', true, MINUTE_IN_SECONDS);
         return false;
     }
 
+    if (wp_remote_retrieve_response_code($response) !== 200) {
+        set_transient($cache_key . '_empty', true, MINUTE_IN_SECONDS);
+        return false;
+    }
+    
     $body = json_decode(wp_remote_retrieve_body($response), true);
-    $category_id = $body['categorySuggestions'][0]['category']['categoryId'] ?? false;
-
-    set_transient($category_id ? $cache_key : $cache_key . '_empty', $category_id ?: true, 7 * DAY_IN_SECONDS);
-    return $category_id;
+    
+    if (
+        json_last_error() !== JSON_ERROR_NONE ||
+        !is_array($body) ||
+        !isset($body['categorySuggestions']) ||
+        !is_array($body['categorySuggestions'])
+    ) {
+        set_transient($cache_key . '_empty', true, MINUTE_IN_SECONDS);
+        return false;
+    }
+    
+    $category_id = $body['categorySuggestions'][0]['category']['categoryId'] ?? '';
+    
+    if (!ctype_digit((string) $category_id)) {
+        set_transient(
+            $cache_key . '_empty',
+            true,
+            5 * MINUTE_IN_SECONDS
+        );
+        return false;
+    }
+    
+    set_transient($cache_key, (string) $category_id, 7 * DAY_IN_SECONDS);
+    
+    return (string) $category_id;
 }
 function get_ebay_user_info($username) {
     if (empty($username) || !is_string($username)) {
@@ -204,8 +221,10 @@ function fetch_ebay_ranked_items($category_slug, $limit = 10, $search_keywords =
         set_transient($cache_key, ['hot' => [], 'bids' => [], 'ending' => []], 30);
         return false;
     };
-    $fetch_lock = 'tcs_ebay_fetch_' . md5($cache_key);
-    if (!tcs_ebay_acquire_lock($fetch_lock)) {
+    $fetch_lock = 'tcs_ebay_fetch_v2_' . md5($cache_key);
+    $owner = TCS_Ebay_API_Client::acquire_lock($fetch_lock);
+
+    if (!$owner) {
         return false;
     }
     try {
@@ -941,8 +960,10 @@ function tcs_top_items_buy_now_candidates(
         return [];
     };
 
-    $fetch_lock = 'tcs_ebay_fetch_' . md5($cache_key);
-    if (!tcs_ebay_acquire_lock($fetch_lock)) {
+    $fetch_lock = 'tcs_ebay_fetch_v2_' . md5($cache_key);
+    $owner = TCS_Ebay_API_Client::acquire_lock($fetch_lock);
+
+    if (!$owner) {
         return [];
     }
     try {
@@ -1007,7 +1028,7 @@ function tcs_top_items_buy_now_candidates(
         set_transient($cache_key, $items, ($items ? 15 : 2) * MINUTE_IN_SECONDS);
         return $active_items($items);
     } finally {
-        delete_option($fetch_lock);
+        TCS_Ebay_API_Client::release_lock($fetch_lock, $owner);
     }
 }
 

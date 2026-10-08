@@ -370,7 +370,7 @@ function handle_get_ebay_item_details() {
     }
     $item_info = get_ebay_item_info($item_id);
 
-    $ebay_item_id = get_post_meta(get_the_ID(), 'ebay_item_id', true);    
+    $ebay_item_id = $item_id; 
 
     if (isset($item_info['error'])) {
         echo '<p class="error">Error: ' . esc_html($item_info['error']) . '</p>';

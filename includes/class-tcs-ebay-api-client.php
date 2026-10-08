@@ -1,20 +1,114 @@
 <?php
 /** Shared transport and quota guards. Listing caches remain with their fetchers. */
 class TCS_Ebay_API_Client {
-    public static function acquire_lock($name, $seconds = 60) {
-        $lock = get_option($name, false);
-        if (is_array($lock) && ($lock['expires'] ?? 0) < time()) {
-            delete_option($name);
-        }
-        $owner = wp_generate_uuid4();
-        return add_option($name, ['owner' => $owner, 'expires' => time() + $seconds], '', false)
-            ? $owner : false;
+    private static function clear_lock_cache($name) {
+        wp_cache_delete($name, 'options');
+        wp_cache_delete('notoptions', 'options');
     }
-
+    
+    public static function acquire_lock($name, $seconds = 60) {
+        global $wpdb;
+    
+        $owner = wp_generate_uuid4();
+        $value = maybe_serialize([
+            'owner'   => $owner,
+            'expires' => time() + max(1, (int) $seconds),
+        ]);
+    
+        // A duplicate option name must not overwrite another owner.
+        $inserted = $wpdb->query(
+            $wpdb->prepare(
+                "INSERT IGNORE INTO {$wpdb->options}
+                    (option_name, option_value, autoload)
+                 VALUES (%s, %s, 'no')",
+                $name,
+                $value
+            )
+        );
+    
+        if ($inserted === 1) {
+            self::clear_lock_cache($name);
+            return $owner;
+        }
+    
+        if ($inserted === false) {
+            return false;
+        }
+    
+        $old_raw = $wpdb->get_var(
+            $wpdb->prepare(
+                "SELECT option_value FROM {$wpdb->options}
+                 WHERE option_name = %s",
+                $name
+            )
+        );
+    
+        if ($old_raw === null) {
+            return false;
+        }
+    
+        $old = maybe_unserialize($old_raw);
+    
+        if (
+            !is_array($old) ||
+            (int) ($old['expires'] ?? PHP_INT_MAX) > time()
+        ) {
+            return false;
+        }
+    
+        // Take over only if the exact expired value is still present.
+        $updated = $wpdb->query(
+            $wpdb->prepare(
+                "UPDATE {$wpdb->options}
+                 SET option_value = %s, autoload = 'no'
+                 WHERE option_name = %s
+                   AND BINARY option_value = BINARY %s",
+                $value,
+                $name,
+                $old_raw
+            )
+        );
+    
+        if ($updated === 1) {
+            self::clear_lock_cache($name);
+            return $owner;
+        }
+    
+        return false;
+    }
+    
     public static function release_lock($name, $owner) {
-        $lock = get_option($name, false);
-        if (is_array($lock) && ($lock['owner'] ?? '') === $owner) {
-            delete_option($name);
+        global $wpdb;
+    
+        $raw = $wpdb->get_var(
+            $wpdb->prepare(
+                "SELECT option_value FROM {$wpdb->options}
+                 WHERE option_name = %s",
+                $name
+            )
+        );
+    
+        $lock = maybe_unserialize($raw);
+    
+        if (
+            !is_array($lock) ||
+            ($lock['owner'] ?? '') !== $owner
+        ) {
+            return;
+        }
+    
+        $deleted = $wpdb->query(
+            $wpdb->prepare(
+                "DELETE FROM {$wpdb->options}
+                 WHERE option_name = %s
+                   AND BINARY option_value = BINARY %s",
+                $name,
+                $raw
+            )
+        );
+    
+        if ($deleted === 1) {
+            self::clear_lock_cache($name);
         }
     }
 

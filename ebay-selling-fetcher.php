@@ -4,7 +4,7 @@ function fetch_ebay_buy_it_now_collectibles() {
     global $env_ebay;
 
     // Check cache first
-    $cached = get_transient('ebay_buy_it_now_cache_v2');
+    $cached = get_transient('ebay_buy_it_now_cache_v3');
     if ($cached !== false && !empty($cached)) {
         error_log("Returning cached eBay Buy It Now data: " . json_encode($cached, JSON_PRETTY_PRINT));
         return $cached;
@@ -74,7 +74,7 @@ function fetch_ebay_buy_it_now_collectibles() {
         }
     }
 
-    set_transient('ebay_buy_it_now_cache_v2', $data, 15 * MINUTE_IN_SECONDS);
+    set_transient('ebay_buy_it_now_cache_v3', $data, 15 * MINUTE_IN_SECONDS);
     return $data;
 }
 
@@ -83,10 +83,7 @@ function create_buy_it_now_posts($force = false) {
     return tcs_run_ebay_import('buynow', $force);
 }
 
-function create_buy_it_now_posts_unlocked() { 
-
-
-    $items = fetch_ebay_buy_it_now_collectibles();
+function create_buy_it_now_posts_unlocked($items) {
 
         if ($items === false) {
             error_log("Failed to fetch Buy It Now items; check previous logs for details");
@@ -314,7 +311,11 @@ function create_buy_it_now_posts_unlocked() {
                 $updated_count++;
                 // Update featured image only if none exists or URL has changed
                 if (!empty($item['imageURL'])) {
-                    $existing_image_url = get_post_meta($post_id, 'ebay_image_url', true);
+                    $existing_image_url = get_post_meta(
+                        $post_id,
+                        '_ebay_featured_image_url',
+                        true
+                    );
                     if (!has_post_thumbnail($post_id) || $existing_image_url !== $item['imageURL']) {
 
                         $attach_id = set_featured_image_from_url(
@@ -462,7 +463,7 @@ function ebay_buy_it_now_shortcode($atts) {
                         } elseif (!empty($ebay_image_url)) {
                             echo '<img src="' . esc_url($ebay_image_url) . '" alt="' . esc_attr(get_the_title()) . '" class="img-fluid">';  
                         } ?>
-                        <h2><a href="<?php echo esc_url($url); ?>" target="_blank"><?php echo get_the_title(); ?></a></h2>
+                        <h2><a href="<?php echo esc_url($url); ?>" target="_blank"><?php echo esc_html(get_the_title()); ?></a></h2>
                        
                     </div>
                     <div class="item-details d-flex justify-content-evenly mt-3">
@@ -471,7 +472,7 @@ function ebay_buy_it_now_shortcode($atts) {
                         </div> 
                     </div>
     
-                    <a href="<?= $url ?>" class="btn btn-secondary" target="_blank">Buy Now</a>
+                    <a  href="<?php echo esc_url($url); ?>" class="btn btn-secondary" target="_blank">Buy Now</a>
  
                 </div>
                 <?php

@@ -118,7 +118,7 @@ jQuery(function ($) {
                 }
             });
     
-            addMeta('Type', labels.join(' Â· '));
+            addMeta('Type', labels.join(' \u00b7 '));
         }
     
         addMeta(
@@ -178,9 +178,9 @@ jQuery(function ($) {
 
         $searchButton
             .prop('disabled', true)
-            .text('Searchingâ€¦');
+            .text('Searching...');
 
-        $searchMessage.text('Searching eBayâ€¦');
+        $searchMessage.text('Searching eBay...');
         $searchResults.empty();
 
         $.ajax({
@@ -273,10 +273,10 @@ jQuery(function ($) {
 
         $('#check-item')
             .prop('disabled', true)
-            .text('Checkingâ€¦');
+            .text('Checking...');
 
         $itemDetails.html(
-            '<p>Loading item detailsâ€¦</p>'
+            '<p>Loading item details...</p>'
         );
 
         $.get(
