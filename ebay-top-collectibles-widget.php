@@ -49,72 +49,189 @@ function tcs_ebay_category_search_phrase($category) {
     return trim(implode(' ', $names));
 }
 
+function tcs_ebay_normalize_category_name($name) {
+    $name = html_entity_decode(
+        (string) $name,
+        ENT_QUOTES,
+        'UTF-8'
+    );
+
+    $name = strtolower($name);
+    $name = str_replace('&', ' and ', $name);
+    $name = preg_replace('/[^\p{L}\p{N}]+/u', ' ', $name);
+
+    return trim(preg_replace('/\s+/u', ' ', $name));
+}
 
 function get_ebay_category_id_from_slug($slug) {
-    if (empty($slug) || !is_string($slug)) {
+    if (!is_string($slug) || trim($slug) === '') {
         return false;
     }
 
-    $cache_key = 'ebay_cat_trail_v3_' . md5($slug);
-    $cached_cat_id = get_transient($cache_key);
-    if ($cached_cat_id !== false || get_transient($cache_key . '_empty')) {
-        return $cached_cat_id;
+    $slug = trim($slug);
+
+    // New version avoids reusing the previous category mappings.
+    $cache_key = 'ebay_cat_trail_v4_' . md5($slug);
+    $cached = get_transient($cache_key);
+
+    if (
+        is_array($cached) &&
+        ctype_digit((string) ($cached['id'] ?? ''))
+    ) {
+        return (string) $cached['id'];
     }
 
-    $access_token = get_transient('ebay_oauth_token') ?: get_ebay_oauth_token();
-    if (!$access_token) {
-        set_transient($cache_key . '_empty', true, MINUTE_IN_SECONDS);
+    if (get_transient($cache_key . '_empty')) {
         return false;
     }
 
-    $query = rawurlencode(str_replace('-', ' ', $slug));
-    $url = "https://api.ebay.com/commerce/taxonomy/v1/category_tree/0/get_category_suggestions?q=$query";
-
-    $response = TCS_Ebay_API_Client::request('taxonomy', $url, [
-        'headers' => [
-            'Authorization' => 'Bearer ' . $access_token,
-            'Accept'        => 'application/json',
-        ],
-        'timeout' => 10,
-    ]);
-
-    if (is_wp_error($response)) {
-        error_log('eBay Category API error: ' . $response->get_error_message());
-        set_transient($cache_key . '_empty', true, MINUTE_IN_SECONDS);
+    $cache_failure = static function (
+        $ttl = MINUTE_IN_SECONDS
+    ) use ($cache_key) {
+        set_transient($cache_key . '_empty', true, $ttl);
         return false;
+    };
+
+    $token = get_transient('ebay_oauth_token')
+        ?: get_ebay_oauth_token();
+
+    if (!$token) {
+        return $cache_failure();
     }
 
-    if (wp_remote_retrieve_response_code($response) !== 200) {
-        set_transient($cache_key . '_empty', true, MINUTE_IN_SECONDS);
-        return false;
+    $url = add_query_arg(
+        ['q' => str_replace('-', ' ', $slug)],
+        'https://api.ebay.com/commerce/taxonomy/v1/category_tree/0/get_category_suggestions'
+    );
+
+    $response = TCS_Ebay_API_Client::request(
+        'taxonomy',
+        $url,
+        [
+            'headers' => [
+                'Authorization' => 'Bearer ' . $token,
+                'Accept' => 'application/json',
+            ],
+            'timeout' => 10,
+        ]
+    );
+
+    if (
+        is_wp_error($response) ||
+        wp_remote_retrieve_response_code($response) !== 200
+    ) {
+        return $cache_failure();
     }
-    
-    $body = json_decode(wp_remote_retrieve_body($response), true);
-    
+
+    $body = json_decode(
+        wp_remote_retrieve_body($response),
+        true
+    );
+
     if (
         json_last_error() !== JSON_ERROR_NONE ||
         !is_array($body) ||
+        !empty($body['errors']) ||
         !isset($body['categorySuggestions']) ||
         !is_array($body['categorySuggestions'])
     ) {
-        set_transient($cache_key . '_empty', true, MINUTE_IN_SECONDS);
-        return false;
+        return $cache_failure();
     }
-    
-    $category_id = $body['categorySuggestions'][0]['category']['categoryId'] ?? '';
-    
-    if (!ctype_digit((string) $category_id)) {
-        set_transient(
-            $cache_key . '_empty',
-            true,
-            5 * MINUTE_IN_SECONDS
-        );
-        return false;
+
+    $trail = tcs_ebay_normalize_category_name($slug);
+    $fallback = null;
+    $best = null;
+    $best_score = 0;
+
+    foreach ($body['categorySuggestions'] as $suggestion) {
+        if (!is_array($suggestion)) {
+            continue;
+        }
+
+        $leaf = $suggestion['category'] ?? null;
+        $nodes = [];
+
+        if (is_array($leaf)) {
+            $nodes[] = $leaf;
+
+            // Keep the first valid suggestion as a fallback.
+            if (
+                $fallback === null &&
+                ctype_digit((string) ($leaf['categoryId'] ?? '')) &&
+                !empty($leaf['categoryName'])
+            ) {
+                $fallback = [
+                    'id' => (string) $leaf['categoryId'],
+                    'name' => (string) $leaf['categoryName'],
+                ];
+            }
+        }
+
+        $ancestors = $suggestion['categoryTreeNodeAncestors'] ?? [];
+
+        if (is_array($ancestors)) {
+            foreach ($ancestors as $ancestor) {
+                if (is_array($ancestor)) {
+                    $nodes[] = $ancestor;
+                }
+            }
+        }
+
+        foreach ($nodes as $node) {
+            $id = (string) ($node['categoryId'] ?? '');
+            $name = (string) ($node['categoryName'] ?? '');
+
+            if (!ctype_digit($id) || $name === '') {
+                continue;
+            }
+
+            $normalized = tcs_ebay_normalize_category_name($name);
+
+            if ($normalized === '') {
+                continue;
+            }
+
+            // Match the end of the WordPress trail.
+            // Example: "Collectibles Jewelry & Watches"
+            // matches the eBay parent "Jewelry & Watches".
+            $suffix = ' ' . $normalized;
+
+            $matches = $trail === $normalized ||
+                (
+                    strlen($trail) >= strlen($suffix) &&
+                    substr($trail, -strlen($suffix)) === $suffix
+                );
+
+            if (!$matches) {
+                continue;
+            }
+
+            // Prefer the longest matching category name.
+            $score = strlen($normalized);
+
+            if ($score > $best_score) {
+                $best_score = $score;
+                $best = [
+                    'id' => $id,
+                    'name' => $name,
+                ];
+            }
+        }
     }
-    
-    set_transient($cache_key, (string) $category_id, 7 * DAY_IN_SECONDS);
-    
-    return (string) $category_id;
+
+    $selected = $best ?: $fallback;
+
+    if (!$selected) {
+        return $cache_failure(5 * MINUTE_IN_SECONDS);
+    }
+
+    set_transient(
+        $cache_key,
+        $selected,
+        7 * DAY_IN_SECONDS
+    );
+
+    return $selected['id'];
 }
 function get_ebay_user_info($username) {
     if (empty($username) || !is_string($username)) {
@@ -192,7 +309,7 @@ XML;
  */
 function fetch_ebay_ranked_items($category_slug, $limit = 10, $search_keywords = '') {
 
-    $cache_key = 'ebay_ranked_trail_v7_' . md5(
+    $cache_key = 'ebay_ranked_trail_v8_' . md5(
         wp_json_encode([
             $category_slug,
             absint($limit),
@@ -627,10 +744,10 @@ function tcs_fetch_auction_parent_items(
     ];
 }
 function render_ebay_top_widget($atts) {
+
     if (tcs_ebay_is_editor_request()) {
         return '<p>eBay listings are displayed when viewing the page.</p>';
     }
-
 
     $atts = shortcode_atts([
         'category' => '',
@@ -684,11 +801,34 @@ function render_ebay_top_widget($atts) {
         (int) $category->parent > 0 &&
         !$is_auctions_root
     ) {
-        $search_keywords = html_entity_decode(
+        $search_keywords = trim(html_entity_decode(
             $category->name,
             ENT_QUOTES,
             get_bloginfo('charset') ?: 'UTF-8'
+        ));
+    }
+
+    // Resolve the category before deciding whether its name
+    // also needs to be used as a listing keyword.
+    if ($category_query !== '' && $search_keywords !== '') {
+        $resolved_id = get_ebay_category_id_from_slug(
+            $category_query
         );
+
+        $mapping = get_transient(
+            'ebay_cat_trail_v4_' . md5(trim($category_query))
+        );
+
+        if (
+            $resolved_id &&
+            is_array($mapping) &&
+            !empty($mapping['name']) &&
+            tcs_ebay_normalize_category_name($mapping['name']) ===
+                tcs_ebay_normalize_category_name($search_keywords)
+        ) {
+            // The category already supplies this restriction.
+            $search_keywords = '';
+        }
     }
 
     $is_collectibles_branch = false;
@@ -970,7 +1110,7 @@ function tcs_top_items_buy_now_candidates(
     $limit = max(1, min(200, absint($limit)));
     $fetch_limit = min(200, max(20, $limit * 2));
 
-    $cache_key = 'tcs_top_bin_v3_' . md5(
+    $cache_key = 'tcs_top_bin_v4_' . md5(
         wp_json_encode([
             $phrase,
             $fetch_limit,
@@ -1031,7 +1171,7 @@ function tcs_top_items_buy_now_candidates(
 
         $category_id = get_ebay_category_id_from_slug($phrase);
         $token = get_transient('ebay_oauth_token')
-            ?: get_ebay_oauth_token();
+            ?: get_ebay_oauth_token();   
 
         if (!$category_id || !$token) {
             return $cache_empty();
@@ -1073,7 +1213,7 @@ function tcs_top_items_buy_now_candidates(
         $body = json_decode(
             wp_remote_retrieve_body($response),
             true
-        );
+        );  
 
         if (
             json_last_error() !== JSON_ERROR_NONE ||
