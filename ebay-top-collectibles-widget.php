@@ -1,4 +1,74 @@
 <?php
+/** Reserve a listing fetch atomically; expired locks recover after interrupted requests. */
+function tcs_ebay_acquire_lock($name, $seconds = 60) {
+    $expires = (int) get_option($name, 0);
+    if ($expires && $expires < time()) {
+        delete_option($name);
+    }
+    return add_option($name, time() + $seconds, '', false);
+}
+
+/** Shared Browse request budget/backoff for the eBay shortcodes. */
+function tcs_ebay_shortcode_browse_get($url, $args) {
+    $cooldown = (int) get_option('tcs_ebay_browse_cooldown', 0);
+    if ($cooldown > time()) {
+        return new WP_Error('tcs_ebay_rate_backoff', 'eBay listing requests are temporarily paused.');
+    }
+
+    $lock = 'tcs_ebay_browse_budget_lock';
+    if (!tcs_ebay_acquire_lock($lock, 10)) {
+        return new WP_Error('tcs_ebay_budget_busy', 'Another request is reserving an eBay API call.');
+    }
+
+    try {
+        // Retain 25 hourly buckets: a conservative ceiling for any trailing 24 hours.
+        $hour = (int) floor(time() / HOUR_IN_SECONDS);
+        $buckets = get_option('tcs_ebay_shortcode_browse_calls', []);
+        $buckets = is_array($buckets) ? $buckets : [];
+        foreach ($buckets as $bucket => $count) {
+            if ((int) $bucket < $hour - 24) {
+                unset($buckets[$bucket]);
+            }
+        }
+        // Leave room under the published default for other application requests.
+        if (array_sum($buckets) >= 4000) {
+            return new WP_Error('tcs_ebay_local_budget', 'The shortcode Browse API budget has been reached.');
+        }
+        $buckets[$hour] = (int) ($buckets[$hour] ?? 0) + 1;
+        update_option('tcs_ebay_shortcode_browse_calls', $buckets, false);
+    } finally {
+        delete_option($lock);
+    }
+
+    $response = wp_remote_get($url, $args);
+    if (is_wp_error($response)) {
+        return $response;
+    }
+
+    $status = wp_remote_retrieve_response_code($response);
+    $body = wp_remote_retrieve_body($response);
+    if (
+        $status === 429 ||
+        ($status === 403 && preg_match('/rate.?limit|call.?limit|quota/i', $body))
+    ) {
+        $retry = trim((string) wp_remote_retrieve_header($response, 'retry-after'));
+        $retry_date = $retry !== '' && !preg_match('/^\d+$/', $retry) ? strtotime($retry) : false;
+        $wait = preg_match('/^\d+$/', $retry)
+            ? max(60, (int) $retry)
+            : ($retry_date ? max(60, $retry_date - time()) : HOUR_IN_SECONDS);
+        update_option('tcs_ebay_browse_cooldown', time() + $wait, false);
+    }
+    return $response;
+}
+
+/** Editor rendering should not trigger external listing requests. */
+function tcs_ebay_is_editor_request() {
+    return is_admin() || (
+        defined('REST_REQUEST') && REST_REQUEST &&
+        isset($_REQUEST['context']) && $_REQUEST['context'] === 'edit'
+    );
+}
+
 /**
  * Build an eBay search phrase from a WordPress category trail.
  */
@@ -152,8 +222,7 @@ XML;
  */
 function fetch_ebay_ranked_items($category_slug, $limit = 10, $search_keywords = '') {
 
-    $access_token = get_transient('ebay_oauth_token') ?: get_ebay_oauth_token();   
-    $cache_key = 'ebay_ranked_trail_v6_' . md5(
+    $cache_key = 'ebay_ranked_trail_v7_' . md5(
         wp_json_encode([
             $category_slug,
             absint($limit),
@@ -173,191 +242,200 @@ function fetch_ebay_ranked_items($category_slug, $limit = 10, $search_keywords =
             ));
         }
     
-        // Refresh the pool if expired items left a tab short.
-        if (
-            count($cached['hot']) >= $limit &&
-            count($cached['bids']) >= $limit &&
-            count($cached['ending']) >= $limit
-        ) {
-            return $cached;
-        }
+        return !empty($cached['hot']) || !empty($cached['bids']) || !empty($cached['ending'])
+            ? $cached
+            : false;
     }
-    if (!$access_token) {
-        error_log("eBay widget: No OAuth token available.");
+
+    $cache_empty = static function () use ($cache_key) {
+        set_transient($cache_key, ['hot' => [], 'bids' => [], 'ending' => []], 30);
+        return false;
+    };
+    $fetch_lock = 'tcs_ebay_fetch_' . md5($cache_key);
+    if (!tcs_ebay_acquire_lock($fetch_lock)) {
         return false;
     }
-
-    $future_iso = gmdate('Y-m-d\TH:i:s\Z', time() + 300);
-    $base_url = 'https://api.ebay.com/buy/browse/v1/item_summary/search';
-
-    $query_params = [
-        'limit'  => 200,
-        'filter' => "buyingOptions:{AUCTION},bidCount:[1..],price:[3..],priceCurrency:USD,itemEndDate:[{$future_iso}..]",
-        'sort'   => 'endingSoonest',
-    ];
-
-    // An empty category phrase means auctions across eBay categories.
-    if ($category_slug !== '') {
-        $category_id = get_ebay_category_id_from_slug($category_slug);
-
-        if (!$category_id || !is_numeric($category_id)) {
-            error_log(
-                "eBay widget: Invalid category ID for phrase: $category_slug"
-            );
-            return false;
+    try {
+        $access_token = get_transient('ebay_oauth_token') ?: get_ebay_oauth_token();
+        if (!$access_token) {
+            error_log("eBay widget: No OAuth token available.");
+            return $cache_empty();
         }
 
-        $query_params['category_ids'] = $category_id;
-    }
+        $future_iso = gmdate('Y-m-d\TH:i:s\Z', time() + 300);
+        $base_url = 'https://api.ebay.com/buy/browse/v1/item_summary/search';
 
-    if ($search_keywords !== '') {
-        $query_params['q'] = $search_keywords;
-    }
-    $url = add_query_arg($query_params, $base_url);
-
-    $response = wp_remote_get($url, [
-        'headers' => [
-            'Authorization'          => 'Bearer ' . $access_token,
-            'X-EBAY-C-ENDUSERCTX'    => 'contextualLocation=country=US',
-            'Accept'                 => 'application/json',
-        ],
-        'timeout' => 12,
-    ]);
-
-    if (is_wp_error($response)) {
-        error_log("eBay API error: " . $response->get_error_message());
-        return false;
-    }
-
-    $status = wp_remote_retrieve_response_code($response);
-    if ($status !== 200) {
-        error_log("eBay API HTTP $status for category $category_slug");
-        return false;
-    }
-
-    $body = json_decode(wp_remote_retrieve_body($response), true);
-    if (empty($body['itemSummaries']) || !is_array($body['itemSummaries'])) {
-        return false;
-    }
-
-    $now = time();
-    $processed_items = [];
-
-    foreach ($body['itemSummaries'] as $raw) {
-        $end_time = isset($raw['itemEndDate']) ? strtotime($raw['itemEndDate']) : null;
-        if (!$end_time || $end_time <= $now + 300) {  // ← add buffer: skip if ends in past or next 5 min
-            continue;
-        }
-        $minutes_left = ($end_time - $now) / 60;
-        if ($minutes_left < 5) {  // or 1, 10 — tune as you like
-            continue;
-        }
-
-        $hours_left = max(0.1, ($end_time - $now) / 3600);
-        // Optional: stricter — skip if less than 1 minute left (edge case lag)
-        if ($hours_left < 0.0167) {  // ~1 minute
-            continue;
-        }
-
-        $buying_options = $raw['buyingOptions'] ?? [];
-
-        // Only keep if AUCTION is present (and optionally require no FIXED_PRICE for pure auctions)
-        if (!in_array('AUCTION', $buying_options)) {
-            continue;  // Skip pure BIN
-        }
-                   
-        $bid_count = (int)($raw['bidCount'] ?? 0);
-        if ($bid_count === 0 && !in_array('AUCTION', $buying_options)) {  // extra safety
-            continue;
-        }
-
-        // Calculate time left for urgency
-        // Inside the foreach ($body['itemSummaries'] as $raw)
-        $end_time   = isset($raw['itemEndDate']) ? strtotime($raw['itemEndDate']) : null;
-        $hours_left = $end_time ? max(0.1, ($end_time - $now) / 3600) : 9999; // avoid div-by-zero
-
-        $urgency_boost = 0;
-        if ($hours_left <= 48) {
-            $urgency_boost = (48 - $hours_left) * 5;  // heavy weight: ending in 1 hour = +235 boost
-        } elseif ($hours_left <= 120) {               // up to 5 days
-            $urgency_boost = (120 - $hours_left) * 1.5;
-        }
-
-        $bid_boost     = $bid_count * 4;
-        $price_value   = isset($raw['currentBidPrice']['value']) 
-            ? (float)$raw['currentBidPrice']['value'] 
-            : (float)($raw['price']['value'] ?? 0);
-        $price_boost   = min(60, $price_value / 5);  // high bids add some signal
-        
-        $hot_score = $urgency_boost + $bid_boost + $price_boost;
-
-        $processed_items[] = [
-            'title'       => $raw['title'] ?? 'Untitled Item',
-            'viewItemURL' => $raw['itemWebUrl'] ?? '#',
-            'price'       => isset($raw['currentBidPrice']['value'])
-                           ? (float)$raw['currentBidPrice']['value']
-                           : (float)($raw['price']['value'] ?? 0),
-            'imageURL'    => $raw['image']['imageUrl'] ?? '',
-            'bidCount'    => $bid_count,
-            'hours_left' => $hours_left,
-            'hotScore'    => $hot_score,
-            'endTime'     => $end_time ? date('c', $end_time) : null,
-            'endTimeUnix' => $end_time ?: PHP_INT_MAX,
+        $query_params = [
+            'limit'  => 200,
+            'filter' => "buyingOptions:{AUCTION},bidCount:[1..],price:[3..],priceCurrency:USD,itemEndDate:[{$future_iso}..]",
+            'sort'   => 'endingSoonest',
         ];
-    }
 
-    if (empty($processed_items)) {
-        return false;
-    }
+        // An empty category phrase means auctions across eBay categories.
+        if ($category_slug !== '') {
+            $category_id = get_ebay_category_id_from_slug($category_slug);
 
-    // ────────────────────────────────────────────────
-    // Create ranked lists for each tab
-    // ────────────────────────────────────────────────
+            if (!$category_id || !is_numeric($category_id)) {
+                error_log(
+                    "eBay widget: Invalid category ID for phrase: $category_slug"
+                );
+                return $cache_empty();
+            }
 
-    // 1. Most Bids (primary: bidCount desc, tie-breaker: watchCount desc)
-    $bids = $processed_items;
-    usort($bids, function($a, $b) {
-        if ($b['bidCount'] !== $a['bidCount']) {
+            $query_params['category_ids'] = $category_id;
+        }
+
+        if ($search_keywords !== '') {
+            $query_params['q'] = $search_keywords;
+        }
+        $url = add_query_arg($query_params, $base_url);
+
+        $response = tcs_ebay_shortcode_browse_get($url, [
+            'headers' => [
+                'Authorization'          => 'Bearer ' . $access_token,
+                'X-EBAY-C-ENDUSERCTX'    => 'contextualLocation=country=US',
+                'Accept'                 => 'application/json',
+            ],
+            'timeout' => 12,
+        ]);
+
+        if (is_wp_error($response)) {
+            error_log("eBay API error: " . $response->get_error_message());
+            return $cache_empty();
+        }
+
+        $status = wp_remote_retrieve_response_code($response);
+        if ($status !== 200) {
+            error_log("eBay API HTTP $status for category $category_slug");
+            return $cache_empty();
+        }
+
+        $body = json_decode(wp_remote_retrieve_body($response), true);
+        if (empty($body['itemSummaries']) || !is_array($body['itemSummaries'])) {
+            return $cache_empty();
+        }
+
+        $now = time();
+        $processed_items = [];
+
+        foreach ($body['itemSummaries'] as $raw) {
+            $end_time = isset($raw['itemEndDate']) ? strtotime($raw['itemEndDate']) : null;
+            if (!$end_time || $end_time <= $now + 300) {  // ← add buffer: skip if ends in past or next 5 min
+                continue;
+            }
+            $minutes_left = ($end_time - $now) / 60;
+            if ($minutes_left < 5) {  // or 1, 10 — tune as you like
+                continue;
+            }
+
+            $hours_left = max(0.1, ($end_time - $now) / 3600);
+            // Optional: stricter — skip if less than 1 minute left (edge case lag)
+            if ($hours_left < 0.0167) {  // ~1 minute
+                continue;
+            }
+
+            $buying_options = $raw['buyingOptions'] ?? [];
+
+            // Only keep if AUCTION is present (and optionally require no FIXED_PRICE for pure auctions)
+            if (!in_array('AUCTION', $buying_options)) {
+                continue;  // Skip pure BIN
+            }
+                   
+            $bid_count = (int)($raw['bidCount'] ?? 0);
+            if ($bid_count === 0 && !in_array('AUCTION', $buying_options)) {  // extra safety
+                continue;
+            }
+
+            // Calculate time left for urgency
+            // Inside the foreach ($body['itemSummaries'] as $raw)
+            $end_time   = isset($raw['itemEndDate']) ? strtotime($raw['itemEndDate']) : null;
+            $hours_left = $end_time ? max(0.1, ($end_time - $now) / 3600) : 9999; // avoid div-by-zero
+
+            $urgency_boost = 0;
+            if ($hours_left <= 48) {
+                $urgency_boost = (48 - $hours_left) * 5;  // heavy weight: ending in 1 hour = +235 boost
+            } elseif ($hours_left <= 120) {               // up to 5 days
+                $urgency_boost = (120 - $hours_left) * 1.5;
+            }
+
+            $bid_boost     = $bid_count * 4;
+            $price_value   = isset($raw['currentBidPrice']['value']) 
+                ? (float)$raw['currentBidPrice']['value'] 
+                : (float)($raw['price']['value'] ?? 0);
+            $price_boost   = min(60, $price_value / 5);  // high bids add some signal
+        
+            $hot_score = $urgency_boost + $bid_boost + $price_boost;
+
+            $processed_items[] = [
+                'title'       => $raw['title'] ?? 'Untitled Item',
+                'viewItemURL' => $raw['itemWebUrl'] ?? '#',
+                'price'       => isset($raw['currentBidPrice']['value'])
+                               ? (float)$raw['currentBidPrice']['value']
+                               : (float)($raw['price']['value'] ?? 0),
+                'imageURL'    => $raw['image']['imageUrl'] ?? '',
+                'bidCount'    => $bid_count,
+                'hours_left' => $hours_left,
+                'hotScore'    => $hot_score,
+                'endTime'     => $end_time ? date('c', $end_time) : null,
+                'endTimeUnix' => $end_time ?: PHP_INT_MAX,
+            ];
+        }
+
+        if (empty($processed_items)) {
+            return $cache_empty();
+        }
+
+        // ────────────────────────────────────────────────
+        // Create ranked lists for each tab
+        // ────────────────────────────────────────────────
+
+        // 1. Most Bids (primary: bidCount desc, tie-breaker: watchCount desc)
+        $bids = $processed_items;
+        usort($bids, function($a, $b) {
+            if ($b['bidCount'] !== $a['bidCount']) {
+                return $b['bidCount'] <=> $a['bidCount'];
+            }
+            return $b['hotScore'] <=> $a['hotScore'];  // tie-breaker
+        });
+        $bids = array_slice($bids, 0, $limit);
+    
+        // Hot: high urgency + bids (must have at least 1 bid to qualify as "hot")
+        $hot = array_filter($processed_items, function($item) {
+            return $item['bidCount'] > 0;
+        });
+        usort($hot, function($a, $b) {
+            return $b['hotScore'] <=> $a['hotScore'];  // urgency dominant
+        });
+        $hot = array_slice($hot, 0, $limit);
+    
+        // Ending Soon: sort primarily by time left ascending (soonest first)
+        $ending = $processed_items;
+        usort($ending, function($a, $b) {
+            $a_end = $a['endTimeUnix'] ?? PHP_INT_MAX;   // add this field below
+            $b_end = $b['endTimeUnix'] ?? PHP_INT_MAX;
+        
+            if ($a_end !== $b_end) {
+                return $a_end <=> $b_end;   // smaller timestamp = ends sooner
+            }
+        
             return $b['bidCount'] <=> $a['bidCount'];
-        }
-        return $b['hotScore'] <=> $a['hotScore'];  // tie-breaker
-    });
-    $bids = array_slice($bids, 0, $limit);
+        });
     
-    // Hot: high urgency + bids (must have at least 1 bid to qualify as "hot")
-    $hot = array_filter($processed_items, function($item) {
-        return $item['bidCount'] > 0;
-    });
-    usort($hot, function($a, $b) {
-        return $b['hotScore'] <=> $a['hotScore'];  // urgency dominant
-    });
-    $hot = array_slice($hot, 0, $limit);
-    
-    // Ending Soon: sort primarily by time left ascending (soonest first)
-    $ending = $processed_items;
-    usort($ending, function($a, $b) {
-        $a_end = $a['endTimeUnix'] ?? PHP_INT_MAX;   // add this field below
-        $b_end = $b['endTimeUnix'] ?? PHP_INT_MAX;
-        
-        if ($a_end !== $b_end) {
-            return $a_end <=> $b_end;   // smaller timestamp = ends sooner
-        }
-        
-        return $b['bidCount'] <=> $a['bidCount'];
-    });
-    
-    $ending = array_slice($ending, 0, $limit);
+        $ending = array_slice($ending, 0, $limit);
 
-    // Take top N for each
-    $result = [
-        'hot'     => array_slice($hot,     0, $limit),
-        'bids'    => array_slice($bids,    0, $limit),
-        'ending' => array_slice($ending, 0, $limit),
-    ];
+        // Take top N for each
+        $result = [
+            'hot'     => array_slice($hot,     0, $limit),
+            'bids'    => array_slice($bids,    0, $limit),
+            'ending' => array_slice($ending, 0, $limit),
+        ];
 
-    // Cache for ~15 minutes
-    set_transient($cache_key, $result, 15 * MINUTE_IN_SECONDS);
-    return $result;
+        // Cache for ~15 minutes
+        set_transient($cache_key, $result, 5 * MINUTE_IN_SECONDS);
+        return $result;
+    } finally {
+        delete_option($fetch_lock);
+    }
 }
 /**
  * Format human-readable time left until auction ends
@@ -397,61 +475,15 @@ function tcs_render_ebay_buy_it_now_widget(
     $category_name,
     $search_keywords = ''
 ) {
-    $category_id = get_ebay_category_id_from_slug($category_query);
-    $token = get_transient('ebay_oauth_token') ?: get_ebay_oauth_token();
-
-    if (!$category_id || !$token) {
-        return '<p>Buy It Now items are temporarily unavailable.</p>';
-    }
-
-    $params = [
-        'category_ids' => $category_id,
-        'limit'        => 20,
-        'filter'       => 'buyingOptions:{FIXED_PRICE},price:[3..],priceCurrency:USD',
-    ];
-
-    if ($search_keywords !== '') {
-        $params['q'] = $search_keywords;
-    }
-
-    $response = wp_remote_get(
-        add_query_arg(
-            $params,
-            'https://api.ebay.com/buy/browse/v1/item_summary/search'
-        ),
-        [
-            'headers' => [
-                'Authorization'         => 'Bearer ' . $token,
-                'X-EBAY-C-MARKETPLACE-ID' => 'EBAY_US',
-                'Accept'                => 'application/json',
-            ],
-            'timeout' => 12,
-        ]
-    );
-
-    if (
-        is_wp_error($response) ||
-        wp_remote_retrieve_response_code($response) !== 200
-    ) {
-        return '<p>Buy It Now items are temporarily unavailable.</p>';
-    }
-
-    $body = json_decode(wp_remote_retrieve_body($response), true);
-
-    $items = array_values(array_filter(
-        $body['itemSummaries'] ?? [],
-        static function ($item) {
-            $options = $item['buyingOptions'] ?? [];
-            $end = !empty($item['itemEndDate'])
-                ? strtotime($item['itemEndDate'])
-                : false;
-
-            return
-                in_array('FIXED_PRICE', $options, true) &&
-                !in_array('AUCTION', $options, true) &&
-                (empty($item['itemEndDate']) || ($end && $end > time()));
-        }
-    ));
+    $candidates = tcs_top_items_buy_now_candidates($category_query, 5, $search_keywords);
+    $items = array_map(static function ($item) {
+        return [
+            'title' => $item['title'],
+            'itemWebUrl' => $item['viewItemURL'],
+            'image' => ['imageUrl' => $item['imageURL']],
+            'price' => ['value' => $item['price'], 'currency' => $item['currency']],
+        ];
+    }, $candidates);
 
     if (!$items) {
         return '<p>No Buy It Now items found for this category.</p>';
@@ -599,6 +631,10 @@ function tcs_fetch_auction_parent_items(
     ];
 }
 function render_ebay_top_widget($atts) {
+    if (tcs_ebay_is_editor_request()) {
+        return '<p>eBay listings are displayed when viewing the page.</p>';
+    }
+
 
     $atts = shortcode_atts([
         'category' => '',
@@ -719,7 +755,6 @@ function render_ebay_top_widget($atts) {
         return '<p>No items found for this category.</p>';
     }
 
-    wp_enqueue_style('ebay-widget', plugins_url('ebay-widget.css', __FILE__), [], '1.0', 'all');
 
     $category_name_esc = esc_html($category_name);
 
@@ -926,107 +961,101 @@ function tcs_top_items_buy_now_candidates(
     $limit,
     $search_keywords = ''
 ) {
-    $category_id = get_ebay_category_id_from_slug($phrase);
+    $limit = max(1, min(200, absint($limit)));
+    $fetch_limit = min(200, max(20, $limit * 2));
+    $cache_key = 'tcs_top_bin_v3_' . md5(wp_json_encode([
+        $phrase,
+        $fetch_limit,
+        $search_keywords,
+    ]));
 
-    if (!$category_id) {
-        return [];
-    }
-
-    $cache_key = 'tcs_top_bin_v2_' . md5(
-        wp_json_encode([
-            $category_id,
-            $limit,
-            $search_keywords,
-        ])
-    );
+    $active_items = static function ($items) use ($limit) {
+        $cutoff = time() + 300;
+        $items = array_filter($items, static function ($item) use ($cutoff) {
+            $end = (int) ($item['endTimeUnix'] ?? 0);
+            return !$end || $end > $cutoff;
+        });
+        return array_slice(array_values($items), 0, $limit);
+    };
 
     $cached = get_transient($cache_key);
-
     if (is_array($cached)) {
-        return $cached;
+        return $active_items($cached);
     }
 
-    $token = get_transient('ebay_oauth_token')
-        ?: get_ebay_oauth_token();
+    $cache_empty = static function () use ($cache_key) {
+        set_transient($cache_key, [], 2 * MINUTE_IN_SECONDS);
+        return [];
+    };
 
-    if (!$token) {
+    $fetch_lock = 'tcs_ebay_fetch_' . md5($cache_key);
+    if (!tcs_ebay_acquire_lock($fetch_lock)) {
         return [];
     }
-
-    $params = [
-        'category_ids' => $category_id,
-        'limit'        => min(200, max(20, $limit * 2)),
-        'filter'       => 'buyingOptions:{FIXED_PRICE},price:[3..],priceCurrency:USD',
-    ];
-    
-    if ($search_keywords !== '') {
-        $params['q'] = $search_keywords;
-    }
-
-    $response = wp_remote_get(
-        add_query_arg(
-            $params,
-            'https://api.ebay.com/buy/browse/v1/item_summary/search'
-        ),
-        [
-            'headers' => [
-                'Authorization'         => 'Bearer ' . $token,
-                'X-EBAY-C-MARKETPLACE-ID' => 'EBAY_US',
-                'Accept'                => 'application/json',
-            ],
-            'timeout' => 12,
-        ]
-    );
-
-    if (
-        is_wp_error($response) ||
-        wp_remote_retrieve_response_code($response) !== 200
-    ) {
-        return [];
-    }
-
-    $body = json_decode(wp_remote_retrieve_body($response), true);
-
-    if (!is_array($body)) {
-        return [];
-    }
-
-    $items = [];
-
-    foreach ($body['itemSummaries'] ?? [] as $raw) {
-        $options = $raw['buyingOptions'] ?? [];
-
-        if (
-            !in_array('FIXED_PRICE', $options, true) ||
-            in_array('AUCTION', $options, true)
-        ) {
-            continue;
+    try {
+        $category_id = get_ebay_category_id_from_slug($phrase);
+        $token = get_transient('ebay_oauth_token') ?: get_ebay_oauth_token();
+        if (!$category_id || !$token) {
+            return $cache_empty();
         }
 
-        $end_time = !empty($raw['itemEndDate'])
-            ? strtotime($raw['itemEndDate'])
-            : null;
-
-        if (
-            !empty($raw['itemEndDate']) &&
-            (!$end_time || $end_time <= time())
-        ) {
-            continue;
-        }
-
-        $items[] = [
-            'title'       => $raw['title'] ?? 'Untitled Item',
-            'viewItemURL' => $raw['itemWebUrl'] ?? '',
-            'imageURL'    => $raw['image']['imageUrl'] ?? '',
-            'price'       => (float) ($raw['price']['value'] ?? 0),
-            'currency'    => $raw['price']['currency'] ?? 'USD',
-            'endTimeUnix' => $end_time,
+        $params = [
+            'category_ids' => $category_id,
+            'limit' => $fetch_limit,
+            'filter' => 'buyingOptions:{FIXED_PRICE},price:[3..],priceCurrency:USD',
         ];
+        if ($search_keywords !== '') {
+            $params['q'] = $search_keywords;
+        }
+
+        $response = tcs_ebay_shortcode_browse_get(
+            add_query_arg($params, 'https://api.ebay.com/buy/browse/v1/item_summary/search'),
+            [
+                'headers' => [
+                    'Authorization' => 'Bearer ' . $token,
+                    'X-EBAY-C-MARKETPLACE-ID' => 'EBAY_US',
+                    'Accept' => 'application/json',
+                ],
+                'timeout' => 12,
+            ]
+        );
+
+        if (is_wp_error($response) || wp_remote_retrieve_response_code($response) !== 200) {
+            return $cache_empty();
+        }
+
+        $body = json_decode(wp_remote_retrieve_body($response), true);
+        if (!is_array($body)) {
+            return $cache_empty();
+        }
+
+        $items = [];
+        foreach ($body['itemSummaries'] ?? [] as $raw) {
+            $options = $raw['buyingOptions'] ?? [];
+            if (!in_array('FIXED_PRICE', $options, true) || in_array('AUCTION', $options, true)) {
+                continue;
+            }
+
+            $end = !empty($raw['itemEndDate']) ? strtotime($raw['itemEndDate']) : null;
+            if (!empty($raw['itemEndDate']) && (!$end || $end <= time() + 300)) {
+                continue;
+            }
+
+            $items[] = [
+                'title' => $raw['title'] ?? 'Untitled item',
+                'viewItemURL' => $raw['itemWebUrl'] ?? '',
+                'imageURL' => $raw['image']['imageUrl'] ?? '',
+                'price' => (float) ($raw['price']['value'] ?? 0),
+                'currency' => $raw['price']['currency'] ?? 'USD',
+                'endTimeUnix' => $end,
+            ];
+        }
+
+        set_transient($cache_key, $items, ($items ? 15 : 2) * MINUTE_IN_SECONDS);
+        return $active_items($items);
+    } finally {
+        delete_option($fetch_lock);
     }
-
-    set_transient($cache_key, $items, 5 * MINUTE_IN_SECONDS);
-
-    return $items;
 }
 
 /**
@@ -1034,6 +1063,10 @@ function tcs_top_items_buy_now_candidates(
  * [ebay_top_items type="auction" limit="10"]
  */
 function tcs_render_ebay_top_items_shortcode($atts) {
+    if (tcs_ebay_is_editor_request()) {
+        return '<p>eBay listings are displayed when viewing the page.</p>';
+    }
+
     $atts = shortcode_atts([
         'type'  => 'auction',
         'limit' => 10,
@@ -1211,12 +1244,6 @@ function tcs_render_ebay_top_items_shortcode($atts) {
 
     $instance_id = wp_unique_id('tcs-ebay-page-');
 
-    wp_enqueue_style(
-        'tcs-ebay-page',
-        plugins_url('ebay-page-items.css', __FILE__),
-        [],
-        '1.0'
-    );
 
     ob_start();
     ?>
@@ -1457,3 +1484,4 @@ add_shortcode(
     'ebay_top_items',
     'tcs_render_ebay_top_items_shortcode'
 );
+
