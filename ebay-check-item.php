@@ -430,31 +430,61 @@ function handle_get_ebay_item_details() {
     $output .= '<div class="ebay-item-footer">';
     $output .= '<a href="https://www.ebay.com/sch/i.html?_nkw=' . urlencode($item_info['title']) . '&_sop=13" target="_blank" class="view-similar">View similar items</a>';
    
-    if(is_user_logged_in()):
-        
-        $user_wishlist = get_user_meta(get_current_user_id(), 'user_wishlist', true);
+    if (is_user_logged_in()):
+        $user_wishlist = function_exists('mwp_get_user_wishlist')
+            ? mwp_get_user_wishlist(get_current_user_id())
+            : get_user_meta(get_current_user_id(), 'user_wishlist', true);
+    
         $in_wishlist = false;
-        
-        if (is_array($user_wishlist)) {
+    
+        // Default ID for a new wishlist entry.
+        $wishlist_item_id = (string) $item_id;
+    
+        if (
+            is_array($user_wishlist) &&
+            function_exists('mwp_wishlist_ebay_id')
+        ) {
             foreach ($user_wishlist as $wish_item) {
-                if (isset($wish_item['item_id']) && $wish_item['item_id'] == $item_id) {
+                if (!is_array($wish_item)) {
+                    continue;
+                }
+    
+                if (
+                    mwp_wishlist_ebay_id($wish_item) === (string) $item_id &&
+                    !empty($wish_item['item_id'])
+                ) {
                     $in_wishlist = true;
+    
+                    // Remove using the ID that is actually saved.
+                    $wishlist_item_id = (string) $wish_item['item_id'];
                     break;
                 }
             }
         }
-        
-        $wishlist_class = $in_wishlist ? 'add-to-wishlist in-wishlist' : 'add-to-wishlist';
-        
-        $output .= '<button class="' . esc_attr($wishlist_class) . '" 
+    
+        $wishlist_class = $in_wishlist
+            ? 'add-to-wishlist in-wishlist'
+            : 'add-to-wishlist';
+    
+        $wishlist_style = $in_wishlist
+            ? 'background-color: red; color: white;'
+            : '';
+    
+        $wishlist_label = $in_wishlist
+            ? 'Remove from Wishlist'
+            : 'Add to Wishlist';
+    
+        $output .= '<button
+            type="button"
+            class="' . esc_attr($wishlist_class) . '"
+            style="' . esc_attr($wishlist_style) . '"
             data-type="post"
-            data-item-id="' . esc_attr($item_id) . '" 
+            data-item-id="' . esc_attr($wishlist_item_id) . '"
             data-title="' . esc_attr($item_info['title']) . '"
-            data-ebay-id="' . esc_attr($ebay_item_id) . '"
-            data-item-url="https://www.ebay.com/itm/' . esc_attr($item_id)  . '"
+            data-ebay-id="' . esc_attr($item_id) . '"
+            data-item-url="' . esc_url('https://www.ebay.com/itm/' . $item_id) . '"
             data-image-url="' . esc_url($item_info['pictureURL']) . '"
-            >' . ($in_wishlist ? 'In Wishlist' : 'Add to Wishlist') . '</button>';
-
+        >' . esc_html($wishlist_label) . '</button>';
     endif;
 
     $output .= '</div>';

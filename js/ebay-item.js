@@ -289,6 +289,7 @@ jQuery(function ($) {
         )
             .done(function (response) {
                 $itemDetails.html(response);
+                $(document).trigger('tcs:wishlist-refresh');
             })
             .fail(function () {
                 $itemDetails.html(
