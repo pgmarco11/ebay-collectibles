@@ -426,6 +426,8 @@ function tcs_render_ebay_buy_it_now_widget(
     $category_name,
     $search_keywords = ''
 ) {
+    $GLOBALS['tcs_ebay_listings_pending'] = false;
+
     $candidates = tcs_top_items_buy_now_candidates($category_query, 5, $search_keywords);
     $items = array_map(static function ($item) {
         return [
@@ -437,6 +439,10 @@ function tcs_render_ebay_buy_it_now_widget(
     }, $candidates);
 
     if (!$items) {
+        if (!empty($GLOBALS['tcs_ebay_listings_pending'])) {
+            return '<p role="status">eBay listings are being prepared. Please refresh this page shortly.</p>';
+        }
+
         return '<p>No Buy It Now items found for this category.</p>';
     }
 
@@ -583,6 +589,8 @@ function tcs_fetch_auction_parent_items(
 }
 function render_ebay_top_widget($atts) {
 
+    $GLOBALS['tcs_ebay_listings_pending'] = false;
+
     if (tcs_ebay_is_editor_request()) {
         return '<p>eBay listings are displayed when viewing the page.</p>';
     }
@@ -703,6 +711,10 @@ function render_ebay_top_widget($atts) {
     }
 
     if (!$ranked || !is_array($ranked)) {
+        if (!empty($GLOBALS['tcs_ebay_listings_pending'])) {
+            return '<p role="status">eBay listings are being prepared. Please refresh this page shortly.</p>';
+        }
+    
         return '<p>No items found for this category.</p>';
     }
 
@@ -1152,6 +1164,9 @@ function tcs_top_items_tools_url(array $item) {
 }
 
 function tcs_render_ebay_top_items_shortcode($atts) {
+
+    $GLOBALS['tcs_ebay_listings_pending'] = false;
+
     if (tcs_ebay_is_editor_request()) {
         return '<p>eBay listings are displayed when viewing the page.</p>';
     }
