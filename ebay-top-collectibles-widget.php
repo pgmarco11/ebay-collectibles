@@ -1113,6 +1113,19 @@ function tcs_top_items_buy_now_candidates(
  * Page/post shortcode:
  * [ebay_top_items type="auction" limit="10"]
  */
+/** Build a Tools link locally from the listing's public URL. */
+function tcs_top_items_tools_url(array $item) {
+    $url = isset($item['viewItemURL']) && is_string($item['viewItemURL'])
+        ? wp_parse_url($item['viewItemURL']) : false;
+    if (!is_array($url) || !preg_match('/(?:^|\.)ebay\.[a-z.]+\z/', strtolower($url['host'] ?? ''))) {
+        return '';
+    }
+    if (!preg_match('~^/itm/(?:[^/]+/)?([0-9]{9,20})/?$~', $url['path'] ?? '', $matches)) {
+        return '';
+    }
+    return add_query_arg('item_id', $matches[1], home_url('/tools/'));
+}
+
 function tcs_render_ebay_top_items_shortcode($atts) {
     if (tcs_ebay_is_editor_request()) {
         return '<p>eBay listings are displayed when viewing the page.</p>';
@@ -1455,6 +1468,15 @@ function tcs_render_ebay_top_items_shortcode($atts) {
                                                 Buy It Now
                                             </p>
                                         <?php endif; ?>
+
+                                        <?php $tools_url = tcs_top_items_tools_url($item); ?>
+                                        <?php if ($tools_url !== ''): ?>
+                                            <a
+                                                class="btn btn-secondary tcs-ebay-tools-link"
+                                                href="<?php echo esc_url($tools_url); ?>"
+                                                aria-label="<?php echo esc_attr('Check item on Tools: ' . ($item['title'] ?? 'eBay listing')); ?>"
+                                            >Check Item on Tools</a>
+                                        <?php endif; ?>
                                     </div>
                                 </li>
                             <?php endforeach; ?>
@@ -1535,6 +1557,7 @@ add_shortcode(
     'ebay_top_items',
     'tcs_render_ebay_top_items_shortcode'
 );
+
 
 
 

@@ -190,7 +190,8 @@ jQuery(function ($) {
             data: {
                 action: 'search_ebay_items',
                 nonce: ebay_ajax_obj.nonce,
-                query: query
+                query: query,
+                category_term: new URLSearchParams(window.location.search).get('category_term') || ''
             }
         })
             .done(function (response) {
@@ -304,4 +305,14 @@ jQuery(function ($) {
                     .text('Check Item');
             });
     });
+    // The existing item-ID flow takes precedence over a title search.
+    const toolsParams = new URLSearchParams(window.location.search);
+    const requestedItemId = (toolsParams.get('item_id') || '').trim();
+    const requestedSearch = (toolsParams.get('search_query') || '').trim();
+
+    if (!/^\d+$/.test(requestedItemId) && requestedSearch && $searchForm.length) {
+        $searchInput.val(requestedSearch);
+        $searchForm.trigger('submit');
+    }
 });
+

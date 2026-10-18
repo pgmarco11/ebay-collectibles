@@ -205,7 +205,20 @@ function handle_search_ebay_items() {
     if (!TCS_Ebay_API_Client::throttle('search', 12)) {
         wp_send_json_error(['message' => 'Too many searches. Wait a minute before trying again.'], 429);
     }
-    $cache_key = 'tcs_ebay_title_search_v1_' . md5($query);
+    // Resolve only an existing WordPress category through the cached eBay tree.
+    $category_id = '';
+    $term_id = isset($_GET['category_term']) && is_scalar($_GET['category_term'])
+        ? absint(wp_unslash($_GET['category_term'])) : 0;
+    if ($term_id && function_exists('tcs_ebay_resolve_search') && function_exists('tcs_ebay_category_search_phrase')) {
+        $term = get_term($term_id, 'category');
+        if ($term instanceof WP_Term) {
+            $resolved = tcs_ebay_resolve_search(tcs_ebay_category_search_phrase($term));
+            if (!is_wp_error($resolved) && !empty($resolved['id'])) {
+                $category_id = (string) $resolved['id'];
+            }
+        }
+    }
+    $cache_key = 'tcs_ebay_title_search_v2_' . md5(wp_json_encode([$query, $category_id]));
     $cached = get_transient($cache_key);
     if (is_array($cached)) {
         $response = $cached;
@@ -222,11 +235,13 @@ function handle_search_ebay_items() {
             );
         }
 
+        $params = [
+            'q' => rawurlencode($query),
+            'limit' => 12,
+        ];
+        if ($category_id !== '') $params['category_ids'] = $category_id;
         $url = add_query_arg(
-            [
-                'q'     => $query,
-                'limit' => 12,
-            ],
+            $params,
             'https://api.ebay.com/buy/browse/v1/item_summary/search'
         );
 
@@ -535,6 +550,7 @@ function format_time_remaining($end_time) {
     $minutes = floor(($diff % 3600) / 60);
     return "{$hours}h {$minutes}m";
 }
+
 
 
 
