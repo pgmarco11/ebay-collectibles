@@ -18,6 +18,11 @@ class TCS_Ebay_Listing_Cache {
 
         $key = self::key($type, $phrase, $limit, $keywords);
         $record = get_transient($key);
+
+        if (!is_array($record)) {
+            $record = get_option($key, []);
+        }
+        
         $record = is_array($record) ? $record : [];
         $now = time();
 
@@ -47,9 +52,9 @@ class TCS_Ebay_Listing_Cache {
             }
         }
 
-        if ((int) ($record['usable_until'] ?? 0) <= $now) {
+        if (!isset($record['data']) || !is_array($record['data'])) {
             $GLOBALS['tcs_ebay_listings_pending'] = true;
-
+        
             return $type === 'auction' ? false : [];
         }
 
@@ -105,6 +110,11 @@ class TCS_Ebay_Listing_Cache {
 
         try {
             $record = get_transient($key);
+
+            if (!is_array($record)) {
+                $record = get_option($key, []);
+            }
+            
             $record = is_array($record) ? $record : [];
 
             if ((int) ($record['refresh_after'] ?? 0) > time()) {
@@ -180,6 +190,21 @@ class TCS_Ebay_Listing_Cache {
                     (int) $record['refresh_after'] - $now
                 )
             );
+
+            // Preserve the last completed results when the transient expires.
+            update_option($key, $record, false);
+
+            // Refresh again without waiting for another page visit.
+            $args = [$type, $phrase, $limit, $keywords];
+
+            if (!wp_next_scheduled('tcs_ebay_refresh_listings', $args)) {
+                wp_schedule_single_event(
+                    max($now + 60, (int) $record['refresh_after']),
+                    'tcs_ebay_refresh_listings',
+                    $args
+                );
+            }
+
         } finally {
             TCS_Ebay_API_Client::release_lock(
                 $key . '_worker',
@@ -221,3 +246,78 @@ function tcs_top_items_buy_now_candidates(
         $search_keywords
     );
 }
+add_action('admin_init', function () {
+    if (!current_user_can('manage_options')) {
+        return;
+    }
+
+    if (get_option('tcs_ebay_auction_warmup_v1')) {
+        return;
+    }
+
+    $categories = get_terms([
+        'taxonomy'   => 'category',
+        'hide_empty' => false,
+    ]);
+
+    if (is_wp_error($categories)) {
+        return;
+    }
+
+    $scheduled = 0;
+
+    foreach ($categories as $category) {
+        $ancestors = get_ancestors(
+            $category->term_id,
+            'category',
+            'taxonomy'
+        );
+
+        $root_id = $ancestors
+            ? (int) end($ancestors)
+            : (int) $category->term_id;
+
+        $root = get_term($root_id, 'category');
+
+        if (
+            !$root instanceof WP_Term ||
+            !in_array($root->slug, ['collectibles', 'auctions'], true) ||
+            $category->slug === 'auctions'
+        ) {
+            continue;
+        }
+
+        $phrase = tcs_ebay_category_search_phrase($category);
+
+        if ($phrase === '') {
+            continue;
+        }
+
+        $keywords = $category->parent
+            ? trim(html_entity_decode(
+                $category->name,
+                ENT_QUOTES,
+                get_bloginfo('charset') ?: 'UTF-8'
+            ))
+            : '';
+
+        $args = ['auction', $phrase, 5, $keywords];
+
+        if (!wp_next_scheduled('tcs_ebay_refresh_listings', $args)) {
+            $result = wp_schedule_single_event(
+                time() + ($scheduled * 30),
+                'tcs_ebay_refresh_listings',
+                $args,
+                true
+            );
+
+            if (is_wp_error($result)) {
+                return;
+            }
+
+            $scheduled++;
+        }
+    }
+
+    update_option('tcs_ebay_auction_warmup_v1', 1, false);
+});

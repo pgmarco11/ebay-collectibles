@@ -598,7 +598,7 @@ function render_ebay_top_widget($atts) {
     $atts = shortcode_atts([
         'category' => '',
         'type'     => 'auto',
-    ], $atts, 'ebay_top_10_widget');
+    ], $atts, 'ebay_top_5_widget');
     
     $requested_type = strtolower(trim((string) $atts['type']));
     
@@ -815,7 +815,7 @@ function render_ebay_top_widget($atts) {
 
     return ob_get_clean();
 }
-add_shortcode('ebay_top_10_widget', 'render_ebay_top_widget');
+add_shortcode('ebay_top_5_widget', 'render_ebay_top_widget');
 
 /*
  * Get category groups for the page/post shortcode.
@@ -1173,7 +1173,7 @@ function tcs_render_ebay_top_items_shortcode($atts) {
 
     $atts = shortcode_atts([
         'type'  => 'auction',
-        'limit' => 10,
+        'limit' => 5,
     ], $atts, 'ebay_top_items');
 
     $type = strtolower(trim((string) $atts['type']));
@@ -1245,7 +1245,7 @@ function tcs_render_ebay_top_items_shortcode($atts) {
             if ($type === 'auction') {
                 $ranked = fetch_ebay_ranked_items(
                     $phrase,
-                    max(10, $section_limit),
+                    $section_limit,
                     $keywords
                 );
 

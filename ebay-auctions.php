@@ -780,7 +780,7 @@ add_action('wp_enqueue_scripts', function() {
                 $carousel.owlCarousel({
                     loop: postCount > 1,
                     autoplay: postCount > 1,
-                    margin: 10,
+                    margin: 30,
                     nav: true,
                     navText: [
                         "<span>&#x2039;</span>", 
