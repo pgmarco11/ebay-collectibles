@@ -133,8 +133,8 @@
     display: flex;
     flex: 1;
     flex-direction: column;
-    gap: .75rem;
-    padding: 1rem;
+    gap: 0.5rem;
+    padding: 0.5rem;
 }
 
 .tcs-ebay-page .tcs-ebay-card-title {
