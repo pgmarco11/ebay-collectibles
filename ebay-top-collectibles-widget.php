@@ -1,5 +1,7 @@
 <?php
 require_once __DIR__ . '/includes/ebay-category-tree.php';
+require_once __DIR__ . '/includes/class-tcs-ebay-listing-cache.php';
+
 /** Shared Browse request budget/backoff for the eBay shortcodes. */
 function tcs_ebay_shortcode_browse_get($url, $args) {
     return TCS_Ebay_API_Client::request('browse', $url, $args);
@@ -131,7 +133,7 @@ XML;
 /**
  * Fetch ranked eBay auctions for tabs: bids, watched, hot.
  */
-function fetch_ebay_ranked_items($category_slug, $limit = 10, $search_keywords = '') {
+function tcs_fetch_ranked_items_now($category_slug, $limit = 10, $search_keywords = '') {
 
     $cache_key = 'ebay_ranked_trail_v9_' . md5(
         wp_json_encode([
@@ -159,19 +161,32 @@ function fetch_ebay_ranked_items($category_slug, $limit = 10, $search_keywords =
     }
 
     $cache_empty = static function ($ttl = 30) use ($cache_key) {
-        set_transient(
-            $cache_key,
-            ['hot' => [], 'bids' => [], 'ending' => []],
-            $ttl
-        );
+        // A confirmed successful search with no matches.
+        if ($ttl === 5 * MINUTE_IN_SECONDS) {
+            $empty = [
+                'hot' => [],
+                'bids' => [],
+                'ending' => [],
+            ];
     
-        return false;
+            set_transient($cache_key, $empty, $ttl);
+    
+            return $empty;
+        }
+    
+        return new WP_Error(
+            'tcs_ebay_refresh_failed',
+            'Auction listings could not be refreshed.'
+        );
     };
     $fetch_lock = 'tcs_ebay_fetch_v2_' . md5($cache_key);
     $owner = TCS_Ebay_API_Client::acquire_lock($fetch_lock);
 
     if (!$owner) {
-        return false;
+        return new WP_Error(
+            'tcs_ebay_refresh_busy',
+            'Another auction refresh is running.'
+        );
     }
     try {
         $access_token = get_transient('ebay_oauth_token') ?: get_ebay_oauth_token();
@@ -895,7 +910,7 @@ function tcs_top_items_group_categories(WP_Term $group) {
  * Successful results are cached for 15 minutes.
  * Empty results and failures are cached for 2 minutes.
  */
-function tcs_top_items_buy_now_candidates(
+function tcs_fetch_buy_now_candidates_now(
     $phrase,
     $limit,
     $search_keywords = ''
@@ -948,18 +963,28 @@ function tcs_top_items_buy_now_candidates(
     }
 
     $cache_empty = static function ($ttl = MINUTE_IN_SECONDS) use ($cache_key) {
-        set_transient($cache_key, [], $ttl);
+        // A confirmed successful search with no matches.
+        if ($ttl === 15 * MINUTE_IN_SECONDS) {
+            set_transient($cache_key, [], $ttl);
     
-        return [];
+            return [];
+        }
+    
+        return new WP_Error(
+            'tcs_ebay_refresh_failed',
+            'Buy It Now listings could not be refreshed.'
+        );
     };
 
     $fetch_lock = 'tcs_ebay_fetch_v2_' . md5($cache_key);
     $owner = TCS_Ebay_API_Client::acquire_lock($fetch_lock);
 
     if (!$owner) {
-        return [];
+        return new WP_Error(
+            'tcs_ebay_refresh_busy',
+            'Another Buy It Now refresh is running.'
+        );
     }
-
     try {
         // Another request may have populated the cache
         // between our initial check and acquiring the lock.
@@ -1296,7 +1321,11 @@ function tcs_render_ebay_top_items_shortcode($atts) {
     }
 
     if (!$sections) {
-        return '<p>No matching eBay items are available right now.</p>';
+        if (!empty($GLOBALS['tcs_ebay_listings_pending'])) {
+            return '<p role="status" class="text-white">eBay listings are being prepared. Please refresh this page shortly.</p>';
+        }
+    
+        return '<p class="text-white">No matching eBay items are available right now.</p>';
     }
 
     $labels = [
