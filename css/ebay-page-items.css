@@ -28,6 +28,8 @@
     font-size: 2.4rem;
     line-height: 1.3;
     text-align: left;
+    color: #ffad24;
+    text-shadow: 2px 2px 0 black;
 }
 
 .tcs-ebay-page > .tcs-ebay-group-heading:first-child {
@@ -42,6 +44,7 @@
     margin: 0;
     font-size: 1.2rem;
     line-height: 1.3;
+    color: white;
 }
 
 .tcs-ebay-page .tcs-ebay-type {
