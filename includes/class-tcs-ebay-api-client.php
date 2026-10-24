@@ -112,32 +112,146 @@ class TCS_Ebay_API_Client {
         }
     }
 
+    /**
+     * Read budget counters without using WordPress's option cache.
+     * Call only while holding the API's budget lock.
+     */
+    private static function read_budget_counters($name) {
+        global $wpdb;
+
+        $raw = $wpdb->get_var(
+            $wpdb->prepare(
+                "SELECT option_value
+                FROM {$wpdb->options}
+                WHERE option_name = %s",
+                $name
+            )
+        );
+
+        if ($wpdb->last_error !== '') {
+            throw new RuntimeException(
+                'Could not read the eBay API budget.'
+            );
+        }
+
+        if ($raw === null) {
+            return [];
+        }
+
+        $counters = maybe_unserialize($raw);
+
+        if (!is_array($counters)) {
+            throw new RuntimeException(
+                'The stored eBay API budget is invalid.'
+            );
+        }
+
+        foreach ($counters as $bucket => $count) {
+            if (
+                !ctype_digit((string) $bucket) ||
+                !is_scalar($count) ||
+                !ctype_digit((string) $count)
+            ) {
+                throw new RuntimeException(
+                    'The stored eBay API counters are invalid.'
+                );
+            }
+
+            $counters[$bucket] = (int) $count;
+        }
+
+        return $counters;
+    }
+
+    /**
+     * Save counters directly, including when the option does not exist.
+     */
+    private static function write_budget_counters(
+        $name,
+        array $counters
+    ) {
+        global $wpdb;
+
+        $result = $wpdb->query(
+            $wpdb->prepare(
+                "INSERT INTO {$wpdb->options}
+                    (option_name, option_value, autoload)
+                VALUES (%s, %s, 'no')
+                ON DUPLICATE KEY UPDATE
+                    option_value = VALUES(option_value),
+                    autoload = 'no'",
+                $name,
+                maybe_serialize($counters)
+            )
+        );
+
+        if ($result === false) {
+            throw new RuntimeException(
+                'Could not save the eBay API budget.'
+            );
+        }
+
+        self::clear_lock_cache($name);
+    }
+
+    /**
+     * Remove the old counter only after its values have been saved.
+     */
+    private static function delete_legacy_budget($name) {
+        global $wpdb;
+
+        $result = $wpdb->query(
+            $wpdb->prepare(
+                "DELETE FROM {$wpdb->options}
+                WHERE option_name = %s",
+                $name
+            )
+        );
+
+        if ($result === false) {
+            throw new RuntimeException(
+                'Could not complete the eBay budget migration.'
+            );
+        }
+
+        self::clear_lock_cache($name);
+    }
+
     public static function request($api, $url, $args = []) {
+
         $paths = [
             'browse' => '/buy/browse/',
             'taxonomy' => '/commerce/taxonomy/',
             'trading' => '/ws/api.dll',
             'oauth' => '/identity/v1/oauth2/token',
         ];
+
         $host = wp_parse_url($url, PHP_URL_HOST);
+
         $path = (string) wp_parse_url($url, PHP_URL_PATH);
+
         if (!isset($paths[$api]) || $host !== 'api.ebay.com' ||
             wp_parse_url($url, PHP_URL_SCHEME) !== 'https' ||
             strpos($path, $paths[$api]) !== 0) {
+
             return new WP_Error('tcs_ebay_endpoint', 'Invalid eBay API endpoint.');
         }
 
         $cooldown = (int) get_option('tcs_ebay_api_cooldown_' . $api, 0);
+
         // Honor a cooldown recorded by the previous shortcode implementation.
         if ($api === 'browse') {
             $cooldown = max($cooldown, (int) get_option('tcs_ebay_browse_cooldown', 0));
         }
+
         if ($cooldown > time()) {
             return new WP_Error('tcs_ebay_backoff', 'eBay requests are temporarily paused. Try again later.', ['retry_after' => $cooldown - time()]);
         }
 
         $lock_name = 'tcs_ebay_budget_lock_' . $api;
+        
         $owner = self::acquire_lock($lock_name, 15);
+
         if (!$owner) {
             return new WP_Error('tcs_ebay_busy', 'Another eBay request is being reserved. Try again shortly.');
         }
@@ -148,42 +262,60 @@ class TCS_Ebay_API_Client {
             $limit = max(0, (int) ($limits[$api] ?? 0));
             $hour = (int) floor(time() / HOUR_IN_SECONDS);
             $key = 'tcs_ebay_api_calls_' . $api;
-            $buckets = get_option($key, []);
-            $buckets = is_array($buckets) ? $buckets : [];
+            $buckets = self::read_budget_counters($key);
+
             // Conservatively include the entire oldest hour of the trailing day.
             foreach ($buckets as $bucket => $count) {
                 if ((int) $bucket < $hour - 24) unset($buckets[$bucket]);
             }
             if ($api === 'browse') {
                 // Count prior shortcode requests during migration; do not reset usage.
-                $old = get_option('tcs_ebay_shortcode_browse_calls', []);
+                $old = self::read_budget_counters(
+                    'tcs_ebay_shortcode_browse_calls'
+                );
+
                 foreach (is_array($old) ? $old : [] as $bucket => $count) {
                     if ((int) $bucket >= $hour - 24) {
                         $buckets[$bucket] = (int) ($buckets[$bucket] ?? 0) + (int) $count;
                     }
                 }
-                delete_option('tcs_ebay_shortcode_browse_calls');
+
+                if ($old !== []) {
+                    self::write_budget_counters(
+                        $key,
+                        $buckets
+                    );
+                
+                    self::delete_legacy_budget(
+                        'tcs_ebay_shortcode_browse_calls'
+                    );
+                }
             }
             if (array_sum($buckets) >= $limit) {
-                update_option($key, $buckets, false);
+                self::write_budget_counters($key, $buckets);
                 return new WP_Error('tcs_ebay_budget', 'The local eBay API budget has been reached. Try again later.');
             }
             $minute = (int) floor(time() / MINUTE_IN_SECONDS);
             $burst_key = 'tcs_ebay_api_burst_' . $api;
             $burst = get_option($burst_key, []);
-            $burst = is_array($burst) ? $burst : [];
+
             foreach ($burst as $bucket => $count) {
                 if ((int) $bucket < $minute - 1) unset($burst[$bucket]);
             }
             $burst_limit = $api === 'oauth' ? 10 : 120;
             if (array_sum($burst) >= $burst_limit) {
-                update_option($key, $buckets, false);
+                self::write_budget_counters($key, $buckets);
                 return new WP_Error('tcs_ebay_burst', 'Too many eBay requests in a short period. Try again shortly.');
             }
             $buckets[$hour] = (int) ($buckets[$hour] ?? 0) + 1;
             $burst[$minute] = (int) ($burst[$minute] ?? 0) + 1;
-            update_option($key, $buckets, false);
-            update_option($burst_key, $burst, false);
+            self::write_budget_counters($key, $buckets);
+            self::write_budget_counters($burst_key, $burst);
+        } catch (RuntimeException $error) {
+            return new WP_Error(
+                'tcs_ebay_budget_storage',
+                $error->getMessage()
+            );
         } finally {
             self::release_lock($lock_name, $owner);
         }
