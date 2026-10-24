@@ -297,7 +297,7 @@ class TCS_Ebay_API_Client {
             }
             $minute = (int) floor(time() / MINUTE_IN_SECONDS);
             $burst_key = 'tcs_ebay_api_burst_' . $api;
-            $burst = get_option($burst_key, []);
+            $burst = self::read_budget_counters($burst_key);
 
             foreach ($burst as $bucket => $count) {
                 if ((int) $bucket < $minute - 1) unset($burst[$bucket]);
