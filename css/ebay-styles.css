@@ -118,8 +118,17 @@
     color: #555; 
     margin: 5px 0; 
 }
-.ebay-tab-content { display: none; }
-.ebay-tab-content.active { display: block; }
+.ebay-top-widget .ebay-tab-content {
+    display: none;
+}
+
+.ebay-top-widget .ebay-tab-content.active:not([hidden]) {
+    display: block;
+}
+
+.ebay-top-widget .ebay-tab-content[hidden] {
+    display: none !important;
+}
 
 /* Auction and Buy It Now carousels */
 :is(.ebay-carousel, .ebay-buy-it-now) {

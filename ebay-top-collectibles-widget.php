@@ -734,14 +734,37 @@ function render_ebay_top_widget($atts) {
         ?>
     </h2>
 
-        <div class="ebay-tabs">
-            <button class="ebay-tab active" data-tab="hot">🔥 Hot</button>
-            <button class="ebay-tab" data-tab="bids">📈 Most Bids</button>
-            <button class="ebay-tab" data-tab="ending">⏰ Ending Soon</button>  <!-- renamed -->
+        <div
+            class="ebay-tabs"
+            role="group"
+            aria-label="Auction ranking"
+        >
+            <button
+                type="button"
+                class="ebay-tab active"
+                data-tab="hot"
+                aria-pressed="true"
+            >🔥 Hot</button>
+            <button
+                type="button"
+                class="ebay-tab"
+                data-tab="bids"
+                aria-pressed="false"
+            >📈 Most Bids</button>
+            <button
+                type="button"
+                class="ebay-tab"
+                data-tab="ending"
+                aria-pressed="false"
+            >⏰ Ending Soon</button>
         </div>
 
         <?php foreach (['hot', 'bids', 'ending'] as $tab): ?>
-            <div class="ebay-tab-content <?php echo $tab === 'hot' ? 'active' : ''; ?>" id="tab-<?php echo $tab; ?>">
+            <div
+                class="ebay-tab-content <?php echo $tab === 'hot' ? 'active' : ''; ?>"
+                data-tab-panel="<?php echo esc_attr($tab); ?>"
+                <?php echo $tab !== 'hot' ? 'hidden' : ''; ?>
+            >
                 <div class="ebay-grid">
 
                     <?php foreach ($ranked[$tab] as $item): ?>
@@ -778,38 +801,6 @@ function render_ebay_top_widget($atts) {
                 </div>
             </div>
         <?php endforeach; ?>    
-
-        <script>
-        document.addEventListener('click', function(e) {
-
-            const tab = e.target.closest('.ebay-tab');
-            if (!tab) return;
-
-            const widget = tab.closest('.ebay-top-widget');
-            if (!widget) return;
-
-            const targetId = 'tab-' + tab.dataset.tab;
-
-            // Remove active from all tabs inside this widget
-            widget.querySelectorAll('.ebay-tab').forEach(t => {
-                t.classList.remove('active');
-            });
-
-            // Remove active from all contents inside this widget
-            widget.querySelectorAll('.ebay-tab-content').forEach(c => {
-                c.classList.remove('active');
-            });
-
-            // Activate clicked tab
-            tab.classList.add('active');
-
-            const target = widget.querySelector('#' + targetId);
-            if (target) {
-                target.classList.add('active');
-            }
-
-        });
-        </script>
     </div>
     <?php
 

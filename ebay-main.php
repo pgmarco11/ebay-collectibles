@@ -242,6 +242,15 @@ add_action('wp_enqueue_scripts', 'ebay_styles');
 
 function ebay_enqueue_scripts() {
     $script_path = plugin_dir_path(__FILE__) . 'js/ebay-item.js';
+    $widget_tabs_path = plugin_dir_path(__FILE__) . 'js/ebay-widget-tabs.js';
+
+    wp_enqueue_script(
+        'tcs-ebay-widget-tabs',
+        plugin_dir_url(__FILE__) . 'js/ebay-widget-tabs.js',
+        [],
+        filemtime($widget_tabs_path),
+        true
+    );
 
     wp_enqueue_script(
         'ebay-item-js',
@@ -259,6 +268,8 @@ function ebay_enqueue_scripts() {
             'nonce'    => wp_create_nonce('ebay_nonce'),
         ]
     );
+
+
 }
 add_action('wp_enqueue_scripts', 'ebay_enqueue_scripts');
 
