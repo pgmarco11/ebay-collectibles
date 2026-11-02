@@ -151,7 +151,7 @@ XML;
                 $resolved = tcs_ebay_resolve_search($category_slug, $search_keywords);
                 if (is_wp_error($resolved)) {
                     error_log('eBay category lookup: ' . $resolved->get_error_message());
-                    return $cache_empty();
+                    return $resolved;
                 }
                 if (!empty($resolved['id'])) {
                     $query_params['category_ids'] = $resolved['id'];
@@ -174,8 +174,11 @@ XML;
             ]);
 
             if (is_wp_error($response)) {
-                error_log("eBay API error: " . $response->get_error_message());
-                return $cache_empty();
+                error_log(
+                    'eBay API error: ' . $response->get_error_message()
+                );
+            
+                return $response;
             }
 
             $status = wp_remote_retrieve_response_code($response);
@@ -503,7 +506,7 @@ XML;
             $resolved = tcs_ebay_resolve_search($phrase, $search_keywords);
             if (is_wp_error($resolved)) {
                 error_log('eBay category lookup: ' . $resolved->get_error_message());
-                return $cache_empty();
+                return $resolved;
             }
             $category_id = $resolved['id'];
             $search_keywords = $resolved['keywords'];
@@ -538,10 +541,11 @@ XML;
                 ]
             );
 
-            if (
-                is_wp_error($response) ||
-                wp_remote_retrieve_response_code($response) !== 200
-            ) {
+            if (is_wp_error($response)) {
+                return $response;
+            }
+            
+            if (wp_remote_retrieve_response_code($response) !== 200) {
                 return $cache_empty();
             }
 

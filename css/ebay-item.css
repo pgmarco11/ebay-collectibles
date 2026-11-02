@@ -575,6 +575,19 @@
     border: 0;
 }
 
+#ebay-item-container #ebay-load-more[hidden] {
+    display: none !important;
+}
+
+#ebay-item-container .ebay-load-more-row {
+    margin: 1.25rem 0 0;
+    text-align: center;
+}
+
+#ebay-item-container #ebay-load-more {
+    min-width: 160px;
+}
+
 @media (max-width: 900px) {
     #ebay-item-container #ebay-search-results {
         grid-template-columns: repeat(2, minmax(0, 1fr));

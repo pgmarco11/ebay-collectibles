@@ -56,6 +56,15 @@ function render_ebay_item_form() {
             ></div>
 
             <div id="ebay-search-results"></div>
+
+            <p class="ebay-load-more-row">
+                <button
+                    type="button"
+                    id="ebay-load-more"
+                    hidden
+                    disabled
+                >Load more</button>
+            </p>
         </div>
 
         <div class="ebay-tool-divider">
@@ -189,7 +198,7 @@ function handle_search_ebay_items() {
         'nonce'
     );
 
-    $query = isset($_GET['query'])
+    $query = isset($_GET['query']) && is_string($_GET['query'])
         ? sanitize_text_field(wp_unslash($_GET['query']))
         : '';
 
@@ -201,6 +210,23 @@ function handle_search_ebay_items() {
             400
         );
     }
+
+    $limit = 12;
+    $raw_offset = $_GET['offset'] ?? '0';
+
+    if (
+        !is_string($raw_offset) ||
+        !preg_match('/^\d{1,4}$/D', $raw_offset) ||
+        (int) $raw_offset > 9996 ||
+        (int) $raw_offset % $limit !== 0
+    ) {
+        wp_send_json_error(
+            ['message' => 'Invalid results page.'],
+            400
+        );
+    }
+
+    $offset = (int) $raw_offset;
 
     if (!TCS_Ebay_API_Client::throttle('search', 12)) {
         wp_send_json_error(['message' => 'Too many searches. Wait a minute before trying again.'], 429);
@@ -218,7 +244,14 @@ function handle_search_ebay_items() {
             }
         }
     }
-    $cache_key = 'tcs_ebay_title_search_v2_' . md5(wp_json_encode([$query, $category_id]));
+    $cache_key = 'tcs_ebay_title_search_v3_' . md5(
+        wp_json_encode([
+            $query,
+            $category_id,
+            $offset,
+            $limit,
+        ])
+    );
     $cached = get_transient($cache_key);
     if (is_array($cached)) {
         $response = $cached;
@@ -237,7 +270,11 @@ function handle_search_ebay_items() {
 
         $params = [
             'q' => rawurlencode($query),
-            'limit' => 12,
+            'limit' => $limit,
+            'offset' => $offset,
+            'filter' => rawurlencode(
+                'buyingOptions:{AUCTION|FIXED_PRICE}'
+            ),
         ];
         if ($category_id !== '') $params['category_ids'] = $category_id;
         $url = add_query_arg(
@@ -301,6 +338,19 @@ function handle_search_ebay_items() {
         );
     }
 
+    if (
+        !is_array($body) ||
+        (
+            isset($body['itemSummaries']) &&
+            !is_array($body['itemSummaries'])
+        )
+    ) {
+        wp_send_json_error(
+            ['message' => 'Invalid eBay search response.'],
+            502
+        );
+    }
+
     if (!is_array($cached)) {
         set_transient($cache_key, [
             'response' => ['code' => 200, 'message' => 'OK'],
@@ -344,6 +394,15 @@ function handle_search_ebay_items() {
             'currency'      => sanitize_text_field(
                 $item['price']['currency'] ?? 'USD'
             ),
+            'current_bid' => sanitize_text_field(
+                $item['currentBidPrice']['value'] ?? ''
+            ),
+            'bid_currency' => sanitize_text_field(
+                $item['currentBidPrice']['currency'] ?? 'USD'
+            ),
+            'bid_count' => isset($item['bidCount'])
+                ? max(0, (int) $item['bidCount'])
+                : null,
             'condition'     => sanitize_text_field(
                 $item['condition'] ?? ''
             ),
@@ -359,9 +418,18 @@ function handle_search_ebay_items() {
         ];
     }
 
+    $next_offset = $offset + $limit;
+
+    $has_more =
+        !empty($body['next']) &&
+        $next_offset < 10000;
+    
     wp_send_json_success(
         [
             'items' => $results,
+            'next_offset' => $has_more
+                ? $next_offset
+                : null,
         ]
     );
 }

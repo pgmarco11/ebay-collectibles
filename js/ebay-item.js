@@ -4,6 +4,7 @@ jQuery(function ($) {
     const $searchButton  = $('#search-ebay');
     const $searchMessage = $('#ebay-search-message');
     const $searchResults = $('#ebay-search-results');
+    const $loadMore      = $('#ebay-load-more');
     const $itemForm      = $('#ebay-item-form');
     const $itemInput     = $('#ebay-item-id');
     const $itemDetails   = $('#item-details');
@@ -43,15 +44,30 @@ jQuery(function ($) {
             class: 'ebay-result-price-row'
         });
     
-        if (item.price) {
+        const isAuction = Array.isArray(item.buying_options) &&
+            item.buying_options.includes('AUCTION');
+
+        const displayPrice = isAuction
+            ? item.current_bid
+            : item.price;
+
+        const displayCurrency = isAuction
+            ? item.bid_currency
+            : item.currency;
+
+        if (displayPrice !== '' && displayPrice != null) {
+            $('<span>', {
+                text: isAuction ? 'Current bid:' : 'Price:'
+            }).appendTo($priceRow);
+
             $('<strong>', {
                 class: 'ebay-search-result-price',
-                text: '$' + item.price
+                text: displayPrice
             }).appendTo($priceRow);
     
             $('<span>', {
                 class: 'ebay-result-currency',
-                text: item.currency
+                text: displayCurrency
             }).appendTo($priceRow);
         }
     
@@ -80,6 +96,32 @@ jQuery(function ($) {
             }).appendTo($group);
     
             $meta.append($group);
+        }
+
+        if (isAuction) {
+            addMeta(
+                'Bids',
+                item.bid_count == null
+                    ? 'Unavailable'
+                    : String(item.bid_count)
+            );
+        
+            if (
+                item.current_bid === '' ||
+                item.current_bid == null
+            ) {
+                addMeta('Current bid', 'Unavailable');
+            }
+        
+            if (
+                item.buying_options.includes('FIXED_PRICE') &&
+                item.price
+            ) {
+                addMeta(
+                    'Buy It Now',
+                    item.price + ' ' + item.currency
+                );
+            }
         }
     
         addMeta('Condition', item.condition);
@@ -163,26 +205,41 @@ jQuery(function ($) {
         return $card;
     }
 
-    $searchForm.on('submit', function (event) {
-        event.preventDefault();
-
-        const query = $.trim($searchInput.val());
-
-        if (query.length < 3) {
-            $searchMessage.text(
-                'Enter at least three characters.'
-            );
-            $searchResults.empty();
+    let searchQuery = '';
+    let nextOffset = null;
+    let searchBusy = false;
+    
+    const seenItems = new Set();
+    
+    const categoryTerm = new URLSearchParams(
+        window.location.search
+    ).get('category_term') || '';
+    
+    function loadSearchPage(append) {
+        if (
+            searchBusy ||
+            (append && nextOffset === null)
+        ) {
             return;
         }
-
+    
+        const offset = append ? nextOffset : 0;
+    
+        searchBusy = true;
+    
         $searchButton
             .prop('disabled', true)
             .text('Searching...');
-
+    
+        $searchInput.prop('disabled', true);
+    
+        $loadMore
+            .prop('disabled', true)
+            .text('Loading...');
+    
+        $searchResults.attr('aria-busy', 'true');
         $searchMessage.text('Searching eBay...');
-        $searchResults.empty();
-
+    
         $.ajax({
             url: ebay_ajax_obj.ajax_url,
             method: 'GET',
@@ -190,50 +247,112 @@ jQuery(function ($) {
             data: {
                 action: 'search_ebay_items',
                 nonce: ebay_ajax_obj.nonce,
-                query: query,
-                category_term: new URLSearchParams(window.location.search).get('category_term') || ''
+                query: searchQuery,
+                category_term: categoryTerm,
+                offset: offset
             }
         })
             .done(function (response) {
-                if (!response.success) {
+                if (
+                    !response?.success ||
+                    !Array.isArray(response.data?.items)
+                ) {
                     $searchMessage.text(
-                        response.data?.message ||
+                        response?.data?.message ||
                         'Unable to search eBay.'
                     );
+    
                     return;
                 }
-
-                const items = response.data.items || [];
-
-                if (!items.length) {
-                    $searchMessage.text(
-                        'No matching eBay listings were found.'
-                    );
-                    return;
-                }
-
-                $searchMessage.text(
-                    items.length + ' matching listings found.'
-                );
-
-                items.forEach(function (item) {
+    
+                const data = response.data;
+    
+                nextOffset =
+                    Number.isInteger(data.next_offset) &&
+                    data.next_offset > offset &&
+                    data.next_offset < 10000 &&
+                    data.next_offset % 12 === 0
+                        ? data.next_offset
+                        : null;
+    
+                data.items.forEach(function (item) {
+                    const id = String(item.item_id || '');
+    
+                    if (!id || seenItems.has(id)) {
+                        return;
+                    }
+    
+                    seenItems.add(id);
+    
                     $searchResults.append(
                         createResultCard(item)
                     );
                 });
+    
+                $searchMessage.text(
+                    seenItems.size
+                        ? seenItems.size + ' listings loaded.' +
+                            (
+                                nextOffset === null
+                                    ? ' No more results.'
+                                    : ''
+                            )
+                        : nextOffset !== null
+                            ? 'No displayable listings on this page. Choose Load more.'
+                            : 'No matching eBay listings were found.'
+                );
             })
             .fail(function (xhr) {
-                const message =
+                $searchMessage.text(
                     xhr.responseJSON?.data?.message ||
-                    'The eBay search could not be completed.';
-
-                $searchMessage.text(message);
+                    'The eBay search could not be completed.'
+                );
             })
             .always(function () {
+                searchBusy = false;
+    
                 $searchButton
                     .prop('disabled', false)
                     .text('Search eBay');
+    
+                $searchInput.prop('disabled', false);
+    
+                $searchResults.attr('aria-busy', 'false');
+    
+                $loadMore
+                    .prop('hidden', nextOffset === null)
+                    .prop('disabled', false)
+                    .text('Load more');
             });
+    }
+    
+    $searchForm.on('submit', function (event) {
+        event.preventDefault();
+    
+        if (searchBusy) {
+            return;
+        }
+    
+        searchQuery = $.trim($searchInput.val());
+        nextOffset = null;
+    
+        seenItems.clear();
+        $searchResults.empty();
+        $loadMore.prop('hidden', true);
+    
+        if (searchQuery.length < 3) {
+            $searchMessage.text(
+                'Enter at least three characters.'
+            );
+    
+            return;
+        }
+    
+        loadSearchPage(false);
+    });
+    
+    $loadMore.on('click', function () {
+        loadSearchPage(true);
     });
 
     $searchResults.on(

@@ -26,7 +26,15 @@ class TCS_Ebay_Listing_Cache {
         $record = is_array($record) ? $record : [];
         $now = time();
 
-        if ((int) ($record['refresh_after'] ?? 0) <= $now) {
+        $cooldown = max(
+            (int) get_option('tcs_ebay_api_cooldown_browse', 0),
+            (int) get_option('tcs_ebay_browse_cooldown', 0)
+        );
+        
+        if (
+            (int) ($record['refresh_after'] ?? 0) <= $now &&
+            $cooldown <= $now
+        ) {
             $args = [$type, $phrase, $limit, $keywords];
 
             $owner = TCS_Ebay_API_Client::acquire_lock(
@@ -52,7 +60,11 @@ class TCS_Ebay_Listing_Cache {
             }
         }
 
-        if (!isset($record['data']) || !is_array($record['data'])) {
+        if (
+            !isset($record['data']) ||
+            !is_array($record['data']) ||
+            (int) ($record['usable_until'] ?? 0) <= $now
+        ) {
             $GLOBALS['tcs_ebay_listings_pending'] = true;
         
             return $type === 'auction' ? false : [];
@@ -121,23 +133,18 @@ class TCS_Ebay_Listing_Cache {
                 return;
             }
 
-            /*
-             * The background cache controls refresh timing.
-             * Remove the old fetcher's cache before fetching.
-             */
-            $legacy_key = $type === 'auction'
-                ? 'ebay_ranked_trail_v9_' . md5(wp_json_encode([
-                    $phrase,
-                    $limit,
-                    $keywords,
-                ]))
-                : 'tcs_top_bin_v5_' . md5(wp_json_encode([
-                    $phrase,
-                    min(200, max(20, $limit * 2)),
-                    $keywords,
-                ]));
+            $now = time();
 
-            delete_transient($legacy_key);
+            $cooldown = max(
+                (int) get_option('tcs_ebay_api_cooldown_browse', 0),
+                (int) get_option('tcs_ebay_browse_cooldown', 0)
+            );
+            
+            if ($cooldown > $now) {
+                return;
+            }
+            
+            // Reuse an existing fetcher cache instead of deleting it.
 
             $data = $type === 'auction'
                 ? tcs_fetch_ranked_items_now($phrase, $limit, $keywords)
@@ -151,8 +158,8 @@ class TCS_Ebay_Listing_Cache {
                     : [];
 
                 $retry = is_array($error_data)
-                    ? (int) ($error_data['retry_after'] ?? 60)
-                    : 60;
+                    ? (int) ($error_data['retry_after'] ?? 300)
+                    : 300;
 
                 $record['refresh_after'] = max(
                     $now + max(60, $retry),
@@ -162,17 +169,13 @@ class TCS_Ebay_Listing_Cache {
 
                 // Failures never extend the age of saved listings.
             } else {
-                $empty = $type === 'auction'
-                    ? empty($data['hot'])
-                        && empty($data['bids'])
-                        && empty($data['ending'])
-                    : empty($data);
-
                 $fresh = $type === 'auction'
-                    ? ($empty ? 300 : 60)
-                    : 900;
-
-                $max_age = $type === 'auction' ? 300 : 3600;
+                    ? 5 * MINUTE_IN_SECONDS
+                    : 15 * MINUTE_IN_SECONDS;
+                
+                $max_age = $type === 'auction'
+                    ? 15 * MINUTE_IN_SECONDS
+                    : HOUR_IN_SECONDS;
 
                 $record = [
                     'data' => $data,
@@ -193,17 +196,6 @@ class TCS_Ebay_Listing_Cache {
 
             // Preserve the last completed results when the transient expires.
             update_option($key, $record, false);
-
-            // Refresh again without waiting for another page visit.
-            $args = [$type, $phrase, $limit, $keywords];
-
-            if (!wp_next_scheduled('tcs_ebay_refresh_listings', $args)) {
-                wp_schedule_single_event(
-                    max($now + 60, (int) $record['refresh_after']),
-                    'tcs_ebay_refresh_listings',
-                    $args
-                );
-            }
 
         } finally {
             TCS_Ebay_API_Client::release_lock(
@@ -246,78 +238,30 @@ function tcs_top_items_buy_now_candidates(
         $search_keywords
     );
 }
+
+// Remove the old self-refreshing category jobs once.
 add_action('admin_init', function () {
     if (!current_user_can('manage_options')) {
         return;
     }
 
-    if (get_option('tcs_ebay_auction_warmup_v1')) {
+    $version_key = 'tcs_ebay_demand_cache_migration_v1';
+
+    if (get_option($version_key)) {
         return;
     }
 
-    $categories = get_terms([
-        'taxonomy'   => 'category',
-        'hide_empty' => false,
-    ]);
+    $result = wp_unschedule_hook(
+        'tcs_ebay_refresh_listings',
+        true
+    );
 
-    if (is_wp_error($categories)) {
-        return;
-    }
-
-    $scheduled = 0;
-
-    foreach ($categories as $category) {
-        $ancestors = get_ancestors(
-            $category->term_id,
-            'category',
-            'taxonomy'
+    if (is_wp_error($result) || $result === false) {
+        error_log(
+            'eBay listing queue cleanup failed; it will retry.'
         );
-
-        $root_id = $ancestors
-            ? (int) end($ancestors)
-            : (int) $category->term_id;
-
-        $root = get_term($root_id, 'category');
-
-        if (
-            !$root instanceof WP_Term ||
-            !in_array($root->slug, ['collectibles', 'auctions'], true) ||
-            $category->slug === 'auctions'
-        ) {
-            continue;
-        }
-
-        $phrase = tcs_ebay_category_search_phrase($category);
-
-        if ($phrase === '') {
-            continue;
-        }
-
-        $keywords = $category->parent
-            ? trim(html_entity_decode(
-                $category->name,
-                ENT_QUOTES,
-                get_bloginfo('charset') ?: 'UTF-8'
-            ))
-            : '';
-
-        $args = ['auction', $phrase, 5, $keywords];
-
-        if (!wp_next_scheduled('tcs_ebay_refresh_listings', $args)) {
-            $result = wp_schedule_single_event(
-                time() + ($scheduled * 30),
-                'tcs_ebay_refresh_listings',
-                $args,
-                true
-            );
-
-            if (is_wp_error($result)) {
-                return;
-            }
-
-            $scheduled++;
-        }
+        return;
     }
 
-    update_option('tcs_ebay_auction_warmup_v1', 1, false);
+    update_option($version_key, 1, false);
 });

@@ -293,7 +293,36 @@ class TCS_Ebay_API_Client {
             }
             if (array_sum($buckets) >= $limit) {
                 self::write_budget_counters($key, $buckets);
-                return new WP_Error('tcs_ebay_budget', 'The local eBay API budget has been reached. Try again later.');
+            
+                $expires = [];
+            
+                foreach ($buckets as $bucket => $count) {
+                    if ((int) $count > 0) {
+                        $expires[] =
+                            ((int) $bucket + 25) * HOUR_IN_SECONDS;
+                    }
+                }
+            
+                $resume_at = $expires
+                    ? max(time() + 60, min($expires))
+                    : time() + HOUR_IN_SECONDS;
+            
+                $cooldown_key = 'tcs_ebay_api_cooldown_' . $api;
+            
+                $resume_at = max(
+                    $resume_at,
+                    (int) get_option($cooldown_key, 0)
+                );
+            
+                update_option($cooldown_key, $resume_at, false);
+            
+                return new WP_Error(
+                    'tcs_ebay_budget',
+                    'The local eBay API budget has been reached. Try again later.',
+                    [
+                        'retry_after' => $resume_at - time(),
+                    ]
+                );
             }
             $minute = (int) floor(time() / MINUTE_IN_SECONDS);
             $burst_key = 'tcs_ebay_api_burst_' . $api;
