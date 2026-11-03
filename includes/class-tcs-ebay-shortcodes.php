@@ -518,15 +518,16 @@ class TCS_Ebay_Shortcodes {
                     return '';
                 }
             
-                if ($type === 'auction' && $post_id > 0) {
+                if ($post_id > 0) {
                     $nonce = wp_create_nonce(
-                        'tcs_ebay_top_items_' . $post_id . '_' . $section_limit
+                        'tcs_ebay_top_items_' . $post_id . '_' . $section_limit . '_' . $type
                     );
-            
+
                     return '<div class="tcs-ebay-loading" role="status"'
                         . ' data-tcs-ebay-top-items-pending'
                         . ' data-post-id="' . esc_attr($post_id) . '"'
                         . ' data-limit="' . esc_attr($section_limit) . '"'
+                        . ' data-type="' . esc_attr($type) . '"'
                         . ' data-url="' . esc_url(admin_url('admin-ajax.php')) . '"'
                         . ' data-nonce="' . esc_attr($nonce) . '">'
                         . '<span class="tcs-ebay-loading-spinner" aria-hidden="true"></span>'

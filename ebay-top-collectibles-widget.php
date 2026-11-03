@@ -340,11 +340,16 @@ function tcs_poll_ebay_top_items(): void {
         'options' => ['min_range' => 1, 'max_range' => 5],
     ]);
 
+    $type = isset($_POST['type']) && is_string($_POST['type'])
+        ? wp_unslash($_POST['type'])
+        : '';
+
     if (
         !$post_id ||
-        !$limit ||
+        !$limit || 
+        !in_array($type, ['auction', 'buynow'], true) ||
         !check_ajax_referer(
-            'tcs_ebay_top_items_' . $post_id . '_' . $limit,
+            'tcs_ebay_top_items_' . $post_id . '_' . $limit . '_' . $type,
             'nonce',
             false
         ) ||

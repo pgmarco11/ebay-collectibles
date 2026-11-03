@@ -147,7 +147,7 @@ document.querySelectorAll('[data-tcs-ebay-auction-pending]').forEach(placeholder
 });
 
 document.querySelectorAll('[data-tcs-ebay-top-items-pending]').forEach(placeholder => {
-    const { postId, limit, url, nonce } = placeholder.dataset;
+    const { postId, limit, type, url, nonce } = placeholder.dataset;
     const loadingMarkup = placeholder.innerHTML;
     const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -165,6 +165,7 @@ document.querySelectorAll('[data-tcs-ebay-top-items-pending]').forEach(placehold
                         action: 'tcs_poll_ebay_top_items',
                         post_id: postId,
                         limit,
+                        type,
                         nonce
                     })
                 });
