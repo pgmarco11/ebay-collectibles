@@ -362,7 +362,7 @@ function tcs_poll_ebay_top_items(): void {
     add_filter('tcs_ebay_queue_listing_refresh', '__return_false');
 
     $html = tcs_ebay_shortcodes()->render_top_items([
-        'type' => 'auction',
+        'type' => $type,
         'limit' => $limit,
     ], $post_id);
 
