@@ -100,11 +100,11 @@ class TCS_Ebay_Shortcodes {
         return ob_get_clean();
     }
 
-    public function render_top_widget($atts) {
+    public function render_top_widget($atts, bool $poll = false) {
 
         $GLOBALS['tcs_ebay_listings_pending'] = false;
 
-        if (tcs_ebay_is_editor_request()) {
+        if (!$poll && tcs_ebay_is_editor_request()) {
             return '<p>eBay listings are displayed when viewing the page.</p>';
         }
 
@@ -224,8 +224,26 @@ class TCS_Ebay_Shortcodes {
         }
 
         if (!$ranked || !is_array($ranked)) {
+
             if (!empty($GLOBALS['tcs_ebay_listings_pending'])) {
-                return $this->render_loading();
+                if ($poll) {
+                    return '';
+                }
+
+                $slug = $category instanceof WP_Term
+                    ? $category->slug
+                    : sanitize_text_field($category_slug);
+
+                return '<div class="tcs-ebay-loading" role="status"'
+                    . ' data-tcs-ebay-auction-pending'
+                    . ' data-category="' . esc_attr($slug) . '"'
+                    . ' data-url="' . esc_url(admin_url('admin-ajax.php')) . '"'
+                    . ' data-nonce="' . esc_attr(wp_create_nonce(
+                        'tcs_ebay_auction_widget_' . $slug
+                    )) . '">'
+                    . '<span class="tcs-ebay-loading-spinner" aria-hidden="true"></span>'
+                    . '<span class="screen-reader-text">Loading eBay auctions</span>'
+                    . '</div>';
             }
 
             return '<p>No items found for this category.</p>';
@@ -320,11 +338,11 @@ class TCS_Ebay_Shortcodes {
         return ob_get_clean();
     }
 
-    public function render_top_items($atts) {
+    public function render_top_items($atts, ?int $poll_post_id = null) {
 
         $GLOBALS['tcs_ebay_listings_pending'] = false;
 
-        if (tcs_ebay_is_editor_request()) {
+        if ($poll_post_id === null && tcs_ebay_is_editor_request()) {
             return '<p>eBay listings are displayed when viewing the page.</p>';
         }
 
@@ -351,7 +369,8 @@ class TCS_Ebay_Shortcodes {
 
         $section_limit = min(5, $requested_limit);
 
-        $groups = tcs_top_items_categories($type, get_the_ID());
+        $post_id = $poll_post_id ?? (int) get_the_ID();
+        $groups = tcs_top_items_categories($type, $post_id);
 
         if (!$groups) {
             return '<p>No suitable WordPress categories were found.</p>';
@@ -493,8 +512,29 @@ class TCS_Ebay_Shortcodes {
         }
 
         if (!$sections) {
+
             if (!empty($GLOBALS['tcs_ebay_listings_pending'])) {
-                return $this->render_loading();
+                if ($poll_post_id !== null) {
+                    return '';
+                }
+            
+                if ($type === 'auction' && $post_id > 0) {
+                    $nonce = wp_create_nonce(
+                        'tcs_ebay_top_items_' . $post_id . '_' . $section_limit
+                    );
+            
+                    return '<div class="tcs-ebay-loading" role="status"'
+                        . ' data-tcs-ebay-top-items-pending'
+                        . ' data-post-id="' . esc_attr($post_id) . '"'
+                        . ' data-limit="' . esc_attr($section_limit) . '"'
+                        . ' data-url="' . esc_url(admin_url('admin-ajax.php')) . '"'
+                        . ' data-nonce="' . esc_attr($nonce) . '">'
+                        . '<span class="tcs-ebay-loading-spinner" aria-hidden="true"></span>'
+                        . '<span class="screen-reader-text">Loading eBay auctions</span>'
+                        . '</div>';
+                }
+            
+                return '<p role="status" class="text-white">eBay listings are being prepared. Please refresh this page shortly.</p>';
             }
 
             return '<p class="text-white">No matching eBay items are available right now.</p>';
@@ -507,7 +547,9 @@ class TCS_Ebay_Shortcodes {
             'buynow' => 'Buy It Now',
         ];
 
-        $instance_id = wp_unique_id('tcs-ebay-page-');
+        $instance_id = $poll_post_id === null
+            ? wp_unique_id('tcs-ebay-page-')
+            : 'tcs-ebay-page-' . wp_generate_uuid4();
 
 
         ob_start();
@@ -687,68 +729,6 @@ class TCS_Ebay_Shortcodes {
             </section>
         <?php endforeach; ?>
     </div>
-
-    <?php if ($type === 'auction'): ?>
-        <script>
-        (() => {
-            const root = document.getElementById(
-                <?php echo wp_json_encode($instance_id); ?>
-            );
-
-            if (!root) return;
-
-            function activate(tab) {
-                const section = tab.closest('.tcs-ebay-section');
-
-                section.querySelectorAll('[role="tab"]').forEach(button => {
-                    const active = button === tab;
-                    button.setAttribute('aria-selected', String(active));
-                    button.tabIndex = active ? 0 : -1;
-                });
-
-                section.querySelectorAll('[role="tabpanel"]').forEach(panel => {
-                    panel.hidden = panel.id !== tab.getAttribute('aria-controls');
-                });
-            }
-
-            root.addEventListener('click', event => {
-                const tab = event.target.closest('.tcs-ebay-tab');
-
-                if (!tab || !root.contains(tab)) return;
-
-                activate(tab);
-            });
-
-            root.addEventListener('keydown', event => {
-                const tab = event.target.closest('.tcs-ebay-tab');
-
-                if (!tab || !root.contains(tab)) return;
-
-                const tabs = Array.from(
-                    tab.closest('[role="tablist"]').querySelectorAll('[role="tab"]')
-                );
-
-                let index = tabs.indexOf(tab);
-
-                if (event.key === 'ArrowRight') {
-                    index = (index + 1) % tabs.length;
-                } else if (event.key === 'ArrowLeft') {
-                    index = (index - 1 + tabs.length) % tabs.length;
-                } else if (event.key === 'Home') {
-                    index = 0;
-                } else if (event.key === 'End') {
-                    index = tabs.length - 1;
-                } else {
-                    return;
-                }
-
-                event.preventDefault();
-                activate(tabs[index]);
-                tabs[index].focus();
-            });
-        })();
-        </script>
-    <?php endif; ?>
     <?php
 
         return ob_get_clean();

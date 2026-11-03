@@ -33,7 +33,8 @@ class TCS_Ebay_Listing_Cache {
         
         if (
             (int) ($record['refresh_after'] ?? 0) <= $now &&
-            $cooldown <= $now
+            $cooldown <= $now &&
+            apply_filters('tcs_ebay_queue_listing_refresh', true)
         ) {
             $args = [$type, $phrase, $limit, $keywords];
 

@@ -2,6 +2,8 @@
 
 require_once __DIR__ . '/includes/class-tcs-ebay-listing-service.php';
 require_once __DIR__ . '/includes/class-tcs-ebay-shortcodes.php';
+require_once __DIR__ . '/includes/class-tcs-ebay-listing-cache.php';
+require_once __DIR__ . '/includes/ebay-category-tree.php';
 
 function tcs_ebay_listing_service(): TCS_Ebay_Listing_Service {
     static $instance;
@@ -18,9 +20,6 @@ function tcs_ebay_shortcodes(): TCS_Ebay_Shortcodes {
     }
     return $instance;
 }
-
-require_once __DIR__ . '/includes/ebay-category-tree.php';
-require_once __DIR__ . '/includes/class-tcs-ebay-listing-cache.php';
 
 /** Shared Browse request budget/backoff for the eBay shortcodes. */
 function tcs_ebay_shortcode_browse_get($url, $args) {
@@ -138,6 +137,45 @@ function render_ebay_top_widget($atts) {
     return tcs_ebay_shortcodes()->render_top_widget($atts);
 }
 add_shortcode('ebay_top_5_widget', 'render_ebay_top_widget');
+
+function tcs_poll_ebay_auction_widget(): void {
+    $category = isset($_POST['category']) && is_string($_POST['category'])
+        ? sanitize_text_field(wp_unslash($_POST['category']))
+        : '';
+
+    if (
+        $category === '' ||
+        !check_ajax_referer(
+            'tcs_ebay_auction_widget_' . $category,
+            'nonce',
+            false
+        )
+    ) {
+        wp_send_json_error(null, 403);
+    }
+
+    add_filter('tcs_ebay_queue_listing_refresh', '__return_false');
+
+    $html = tcs_ebay_shortcodes()->render_top_widget([
+        'category' => $category,
+        'type' => 'auction',
+    ], true);
+
+    wp_send_json_success([
+        'pending' => $html === '',
+        'html' => $html,
+    ]);
+}
+
+add_action(
+    'wp_ajax_tcs_poll_ebay_auction_widget',
+    'tcs_poll_ebay_auction_widget'
+);
+
+add_action(
+    'wp_ajax_nopriv_tcs_poll_ebay_auction_widget',
+    'tcs_poll_ebay_auction_widget'
+);
 
 /*
  * Get category groups for the page/post shortcode.
@@ -277,3 +315,42 @@ add_shortcode(
     'ebay_top_items',
     'tcs_render_ebay_top_items_shortcode'
 );
+
+function tcs_poll_ebay_top_items(): void {
+    $post_id = filter_var($_POST['post_id'] ?? null, FILTER_VALIDATE_INT, [
+        'options' => ['min_range' => 1],
+    ]);
+
+    $limit = filter_var($_POST['limit'] ?? null, FILTER_VALIDATE_INT, [
+        'options' => ['min_range' => 1, 'max_range' => 5],
+    ]);
+
+    if (
+        !$post_id ||
+        !$limit ||
+        !check_ajax_referer(
+            'tcs_ebay_top_items_' . $post_id . '_' . $limit,
+            'nonce',
+            false
+        ) ||
+        get_post_status($post_id) !== 'publish' ||
+        post_password_required($post_id)
+    ) {
+        wp_send_json_error(null, 403);
+    }
+
+    add_filter('tcs_ebay_queue_listing_refresh', '__return_false');
+
+    $html = tcs_ebay_shortcodes()->render_top_items([
+        'type' => 'auction',
+        'limit' => $limit,
+    ], $post_id);
+
+    wp_send_json_success([
+        'pending' => $html === '',
+        'html' => $html,
+    ]);
+}
+
+add_action('wp_ajax_tcs_poll_ebay_top_items', 'tcs_poll_ebay_top_items');
+add_action('wp_ajax_nopriv_tcs_poll_ebay_top_items', 'tcs_poll_ebay_top_items');

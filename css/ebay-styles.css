@@ -17,6 +17,7 @@
   --ebay-text-black: #000;
   --ebay-font-heading: 'Bangers', cursive, sans-serif;
 }
+
 /* Top collectibles widget and wish list */
 .ebay-top-widget {
   max-width: 1200px;
@@ -303,6 +304,35 @@
 .ebay-buy-it-now .item > .btn {
     flex: 0 0 auto;
     margin: 1rem 1.25rem;
+}
+
+.tcs-ebay-loading {
+    display: grid;
+    place-items: center;
+    min-height: 8rem;
+}
+
+.tcs-ebay-loading-spinner {
+    display: block;
+    box-sizing: border-box;
+    width: 50px;
+    height: 50px;
+    border: 5px solid rgba(128, 128, 128, 0.35);
+    border-top-color: #0099ff;
+    border-radius: 50%;
+    animation: tcs-ebay-loading-spin 1s linear infinite;
+}
+
+@keyframes tcs-ebay-loading-spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .tcs-ebay-loading-spinner {
+        animation: none;
+    }
 }
 
 /* Owl's button styles require these explicit overrides. */
