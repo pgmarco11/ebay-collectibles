@@ -185,10 +185,11 @@ add_action(
  */
 function tcs_top_items_categories($type, $post_id) {
     $root_slugs = $type === 'auction'
-        ? ['auctions', 'collectibles']
+        ? ['collectibles', 'auctions']
         : ['collectibles'];
 
     $groups = [];
+    $collectibles_group_names = [];
 
     foreach ($root_slugs as $slug) {
         $root = get_term_by('slug', $slug, 'category');
@@ -210,6 +211,20 @@ function tcs_top_items_categories($type, $post_id) {
         }
 
         foreach ($children as $child) {
+            if ($type === 'auction') {
+                $name = strtolower(trim(html_entity_decode(
+                    $child->name,
+                    ENT_QUOTES,
+                    get_bloginfo('charset') ?: 'UTF-8'
+                )));
+        
+                if ($slug === 'collectibles') {
+                    $collectibles_group_names[$name] = true;
+                } elseif (isset($collectibles_group_names[$name])) {
+                    continue;
+                }
+            }
+        
             $groups[$child->term_id] = $child;
         }
 
