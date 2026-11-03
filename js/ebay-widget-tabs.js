@@ -180,7 +180,10 @@ document.querySelectorAll('[data-tcs-ebay-top-items-pending]').forEach(placehold
                 const result = await response.json();
 
                 if (result.success && result.data.pending === false) {
-                    placeholder.outerHTML = result.data.html;
+                    const target = placeholder.closest('[data-tcs-ebay-top-items-loading]')
+                        || placeholder;
+
+                    target.outerHTML = result.data.html;
                     return;
                 }
             } catch {

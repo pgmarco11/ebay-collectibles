@@ -145,12 +145,14 @@ function tcs_validate_ebay_selling_pages($pages) {
 }
 
 /** Fetch every seller-inventory page before imports change or remove any posts. */
-function tcs_get_cached_ebay_selling_pages() {
+function tcs_get_cached_ebay_selling_pages($force = false) {
     global $env_ebay;
     $token = (string) ($env_ebay['EBAY_AUTH_TOKEN'] ?? '');
     if ($token === '') return new WP_Error('tcs_ebay_auth', 'The eBay seller token is missing.');
     $key = 'tcs_ebay_selling_pages_v2_' . md5($token);
-    $cached = get_transient($key);
+    
+    $cached = $force ? false : get_transient($key);
+
     if (is_array($cached) && isset($cached['error'])) {
         return new WP_Error('tcs_ebay_inventory_failed', $cached['error']);
     }

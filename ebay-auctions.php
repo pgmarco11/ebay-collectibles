@@ -19,7 +19,7 @@ function get_item_details($item_id, $auth_token = '') {
         'description' => (string) $xml->Item->Description,
     ];
 }
-function fetch_ebay_auctions() {
+function fetch_ebay_auctions($force = false) {
     global $env_ebay;
 
     // Clear cache for testing (remove after confirming fix)clear
@@ -38,7 +38,8 @@ function fetch_ebay_auctions() {
         return ['error' => 'Missing EBAY_AUTH_TOKEN in ebay.env'];
     }
 
-    $pages = tcs_get_cached_ebay_selling_pages();
+    $pages = tcs_get_cached_ebay_selling_pages($force);
+    
     if (is_wp_error($pages)) return ['error' => $pages->get_error_message()];
     $xml = $pages[0];
 

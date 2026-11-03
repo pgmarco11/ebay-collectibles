@@ -14,7 +14,11 @@ class TCS_Ebay_Inventory_Importer {
         try {
             $cache = $type === 'auction' ? 'ebay_auctions_cache_v3' : 'ebay_buy_it_now_cache_v3';
             if ($force) delete_transient($cache);
-            $items = $type === 'auction' ? fetch_ebay_auctions() : fetch_ebay_buy_it_now_collectibles();
+            
+            $items = $type === 'auction'
+                ? fetch_ebay_auctions($force)
+                : fetch_ebay_buy_it_now_collectibles($force);
+
             if (!is_array($items) || isset($items['error']) || !array_key_exists('items', $items)) {
                 $message = is_array($items) ? ($items['error'] ?? 'eBay inventory retrieval failed.') : 'eBay inventory retrieval failed.';
                 $error = new WP_Error('tcs_ebay_import_failed', $message);

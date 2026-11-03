@@ -11,7 +11,7 @@ function tcs_ebay_buy_now_importer(): TCS_Ebay_Buy_Now_Importer {
 }
 
 // ebay-selling-fetcher.php
-function fetch_ebay_buy_it_now_collectibles() {
+function fetch_ebay_buy_it_now_collectibles($force = false) {
     global $env_ebay;
 
     // Check cache first
@@ -28,7 +28,7 @@ function fetch_ebay_buy_it_now_collectibles() {
         return false;
     }
 
-    $pages = tcs_get_cached_ebay_selling_pages();
+    $pages = tcs_get_cached_ebay_selling_pages($force);
     if (is_wp_error($pages)) return ['error' => $pages->get_error_message()];
     $xml = $pages[0];
 

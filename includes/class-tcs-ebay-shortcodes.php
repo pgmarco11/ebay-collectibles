@@ -511,34 +511,39 @@ class TCS_Ebay_Shortcodes {
             }
         }
 
+        $pending = !empty($GLOBALS['tcs_ebay_listings_pending']);
+
+        if ($pending && $poll_post_id !== null) {
+            return '';
+        }
+        
+        $loading = '';
+        
+        if ($pending && $post_id > 0) {
+            $nonce = wp_create_nonce(
+                'tcs_ebay_top_items_' . $post_id . '_' . $section_limit . '_' . $type
+            );
+        
+            $loading = '<div class="tcs-ebay-loading" role="status"'
+                . ' data-tcs-ebay-top-items-pending'
+                . ' data-post-id="' . esc_attr($post_id) . '"'
+                . ' data-limit="' . esc_attr($section_limit) . '"'
+                . ' data-type="' . esc_attr($type) . '"'
+                . ' data-url="' . esc_url(admin_url('admin-ajax.php')) . '"'
+                . ' data-nonce="' . esc_attr($nonce) . '">'
+                . '<span class="tcs-ebay-loading-spinner" aria-hidden="true"></span>'
+                . '<span class="screen-reader-text">Loading eBay listings</span>'
+                . '</div>';
+        } elseif ($pending) {
+            $loading = '<p role="status" class="text-white">'
+                . 'eBay listings are being prepared. Please refresh this page shortly.'
+                . '</p>';
+        }
+        
         if (!$sections) {
-
-            if (!empty($GLOBALS['tcs_ebay_listings_pending'])) {
-                if ($poll_post_id !== null) {
-                    return '';
-                }
-            
-                if ($post_id > 0) {
-                    $nonce = wp_create_nonce(
-                        'tcs_ebay_top_items_' . $post_id . '_' . $section_limit . '_' . $type
-                    );
-
-                    return '<div class="tcs-ebay-loading" role="status"'
-                        . ' data-tcs-ebay-top-items-pending'
-                        . ' data-post-id="' . esc_attr($post_id) . '"'
-                        . ' data-limit="' . esc_attr($section_limit) . '"'
-                        . ' data-type="' . esc_attr($type) . '"'
-                        . ' data-url="' . esc_url(admin_url('admin-ajax.php')) . '"'
-                        . ' data-nonce="' . esc_attr($nonce) . '">'
-                        . '<span class="tcs-ebay-loading-spinner" aria-hidden="true"></span>'
-                        . '<span class="screen-reader-text">Loading eBay auctions</span>'
-                        . '</div>';
-                }
-            
-                return '<p role="status" class="text-white">eBay listings are being prepared. Please refresh this page shortly.</p>';
-            }
-
-            return '<p class="text-white">No matching eBay items are available right now.</p>';
+            return $loading !== ''
+                ? $loading
+                : '<p class="text-white">No matching eBay items are available right now.</p>';
         }
 
         $labels = [
@@ -732,7 +737,16 @@ class TCS_Ebay_Shortcodes {
     </div>
     <?php
 
-        return ob_get_clean();
+    $html = ob_get_clean();
+
+    if ($loading === '') {
+        return $html;
     }
+
+    return '<div data-tcs-ebay-top-items-loading>'
+        . $html
+        . $loading
+        . '</div>';
+        }
 
 }
