@@ -9,6 +9,14 @@ class TCS_Ebay_Shortcodes {
         $this->listings = $listings;
     }
 
+    private function render_loading(): string {
+        return '<div class="tcs-ebay-loading" role="status">'
+            . '<span class="tcs-ebay-loading-spinner" aria-hidden="true"></span>'
+            . '<span class="screen-reader-text">'
+            . 'Preparing eBay listings. Refresh this page shortly.'
+            . '</span></div>';
+    }
+
     public function render_buy_it_now(
         $category_query,
         $category_name,
@@ -28,7 +36,7 @@ class TCS_Ebay_Shortcodes {
 
         if (!$items) {
             if (!empty($GLOBALS['tcs_ebay_listings_pending'])) {
-                return '<p role="status">eBay listings are being prepared. Please refresh this page shortly.</p>';
+                return $this->render_loading();
             }
 
             return '<p>No Buy It Now items found for this category.</p>';
@@ -217,7 +225,7 @@ class TCS_Ebay_Shortcodes {
 
         if (!$ranked || !is_array($ranked)) {
             if (!empty($GLOBALS['tcs_ebay_listings_pending'])) {
-                return '<p role="status">eBay listings are being prepared. Please refresh this page shortly.</p>';
+                return $this->render_loading();
             }
 
             return '<p>No items found for this category.</p>';
@@ -486,7 +494,7 @@ class TCS_Ebay_Shortcodes {
 
         if (!$sections) {
             if (!empty($GLOBALS['tcs_ebay_listings_pending'])) {
-                return '<p role="status" class="text-white">eBay listings are being prepared. Please refresh this page shortly.</p>';
+                return $this->render_loading();
             }
 
             return '<p class="text-white">No matching eBay items are available right now.</p>';

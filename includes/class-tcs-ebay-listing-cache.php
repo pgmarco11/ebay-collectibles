@@ -89,11 +89,33 @@ class TCS_Ebay_Listing_Cache {
 
         if ($type === 'auction') {
             $data = [];
-
+            $pool = [];
+        
             foreach (['hot', 'bids', 'ending'] as $tab) {
                 $data[$tab] = $active($record['data'][$tab] ?? []);
+        
+                foreach ($data[$tab] as $item) {
+                    $url = $item['viewItemURL'] ?? '';
+        
+                    if ($url !== '' && $url !== '#') {
+                        $pool[$url] = $item;
+                    }
+                }
             }
-
+        
+            // Use every still-active cached candidate for Ending Soon.
+            $ending = array_values($pool);
+        
+            usort($ending, static function ($a, $b) {
+                return
+                    (($a['endTimeUnix'] ?? PHP_INT_MAX)
+                        <=> ($b['endTimeUnix'] ?? PHP_INT_MAX))
+                    ?: (($b['bidCount'] ?? 0)
+                        <=> ($a['bidCount'] ?? 0));
+            });
+        
+            $data['ending'] = array_slice($ending, 0, $limit);
+        
             return !empty($data['hot'])
                 || !empty($data['bids'])
                 || !empty($data['ending'])
