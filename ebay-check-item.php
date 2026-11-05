@@ -471,16 +471,22 @@ function handle_get_ebay_item_details() {
     $output .= '</div>';    
     $output .= '<div class="ebay-item-meta">';
     $output .= '<ul class="item-meta-list">';
-
-    if ($item_info['ListingType'] !== 'FixedPriceItem'):
+   
+    $current_price = trim($item_info['currentPrice'] . ' ' . $item_info['currentPriceCurrency']);
+    $minimum_bid = trim($item_info['minimumBid'] . ' ' . $item_info['minimumBidCurrency']);
+    
+    if ($item_info['ListingType'] !== 'FixedPriceItem') {
         $output .= '<li><strong>Listing Type:</strong> Auction</li>';
         $output .= '<li><strong>Bids:</strong> ' . esc_html($item_info['bidCount']) . '</li>';
-        $output .= '<li><strong>Current Bid:</strong> ' . esc_html($item_info['currentPrice']) . ' USD</li>';
-        $output .= '<li><strong>Minimum Bid:</strong> ' . esc_html($item_info['minimumBid']) . ' USD</li>';
-    else:
+        $output .= '<li><strong>Current Bid:</strong> ' . esc_html($current_price) . '</li>';
+    
+        if ($item_info['minimumBid'] !== '') {
+            $output .= '<li><strong>Minimum Bid:</strong> ' . esc_html($minimum_bid) . '</li>';
+        }
+    } else {
         $output .= '<li><strong>Listing Type:</strong> Buy Now</li>';
-        $output .= '<li><strong>Current Price:</strong> ' . esc_html($item_info['currentPrice']) . ' USD</li>';
-    endif;
+        $output .= '<li><strong>Current Price:</strong> ' . esc_html($current_price) . '</li>';
+    }
 
     $output .= '<li><strong>Time Left:</strong> ' . esc_html(format_time_remaining($item_info['endTime'])) . '</li>';
 
@@ -579,25 +585,34 @@ function handle_get_ebay_item_details() {
 }
 //Helper Functions - Fetch eBay item info - Format time
 function get_ebay_item_info($item_id) {
+
     $xml = tcs_get_cached_ebay_item_xml($item_id);
+
     if (is_wp_error($xml)) return ['error' => $xml->get_error_message()];
     $itemList = $xml->Item->ItemSpecifics->NameValueList;
 
-     $item_specifics = [];
+    $item_specifics = [];
    
-     if (isset($itemList)) {
+    if (isset($itemList)) {
         
         foreach ($itemList as $nvl) {
             $name = (string) $nvl->Name;
             $value = (string) $nvl->Value;          
             $item_specifics[$name] = $value;
         }  
-     }
+    }
+
+    $selling_status = $xml->Item->SellingStatus;
+    $current_price = $selling_status->CurrentPrice ?? null;
+    $minimum_bid = $selling_status->MinimumToBid ?? null;
+    $listing_currency = (string) ($xml->Item->Currency ?? '');
 
     return [
         'title'                => (string) $xml->Item->Title,
-        'currentPrice'         => (string) $xml->Item->SellingStatus->CurrentPrice,
-        'minimumBid'           => (string) $xml->Item->SellingStatus->MinimumToBid,
+        'currentPrice'         => (string) $current_price,
+        'currentPriceCurrency' => (string) ($current_price['currencyID'] ?? '') ?: $listing_currency,
+        'minimumBid'           => (string) $minimum_bid,
+        'minimumBidCurrency'   => (string) ($minimum_bid['currencyID'] ?? '') ?: $listing_currency,
         'endTime'              => (string) $xml->Item->ListingDetails->EndTime,
         'bidCount'             => (string) $xml->Item->SellingStatus->BidCount,
         'sellerUsername'       => (string) $xml->Item->Seller->UserID,
