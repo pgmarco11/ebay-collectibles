@@ -503,6 +503,7 @@ class TCS_Ebay_Shortcodes {
 
             $sections[] = [
                 'group_id'   => $group->term_id,
+                'category_id' => $listing_category->term_id,
                 'group_name' => $group->name,
                 'has_children' => !empty($children),
                 'name'       => $listing_category->name,
@@ -578,6 +579,9 @@ class TCS_Ebay_Shortcodes {
                 ?>
             <section
                 class="tcs-ebay-section"
+                data-ebay-section="<?php echo esc_attr(
+                    $section['group_id'] . ':' . $section['category_id']
+                ); ?>"
                 aria-labelledby="<?php echo esc_attr($section_id . '-heading'); ?>"
             >
                 <header class="tcs-ebay-section-header">
@@ -614,6 +618,7 @@ class TCS_Ebay_Shortcodes {
                                 type="button"
                                 class="tcs-ebay-tab"
                                 role="tab"
+                                data-ebay-tab="<?php echo esc_attr($key); ?>"
                                 id="<?php echo esc_attr($section_id . '-tab-' . $key); ?>"
                                 aria-controls="<?php echo esc_attr($section_id . '-panel-' . $key); ?>"
                                 aria-selected="<?php echo $active ? 'true' : 'false'; ?>"

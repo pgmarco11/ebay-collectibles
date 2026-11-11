@@ -19,7 +19,7 @@
         if (!tab || !tab.closest('.tcs-ebay-page')) return;
 
         activate(tab);
-    });
+    }); 
 
     document.addEventListener('keydown', event => {
         const tab = event.target.closest('.tcs-ebay-tab');
@@ -48,197 +48,249 @@
         activate(tabs[index]);
         tabs[index].focus();
     });
-})();
 
-document.addEventListener('click', function (event) {
-    const button = event.target.closest(
-        '.ebay-top-widget .ebay-tab'
-    );
+    document.addEventListener('click', function (event) {
+        const button = event.target.closest(
+            '.ebay-top-widget .ebay-tab'
+        );
 
-    if (!button) return;
+        if (!button) return;
 
-    const widget = button.closest('.ebay-top-widget');
+        const widget = button.closest('.ebay-top-widget');
 
-    const panels = Array.from(widget.querySelectorAll(
-        '.ebay-tab-content[data-tab-panel]'
-    ));
+        const panels = Array.from(widget.querySelectorAll(
+            '.ebay-tab-content[data-tab-panel]'
+        ));
 
-    const target = panels.find(
-        panel => panel.dataset.tabPanel === button.dataset.tab
-    );
+        const target = panels.find(
+            panel => panel.dataset.tabPanel === button.dataset.tab
+        );
 
-    if (!target) return;
+        if (!target) return;
 
-    event.preventDefault();
+        event.preventDefault();
 
-    widget.querySelectorAll('.ebay-tab').forEach(tab => {
-        const active = tab === button;
+        widget.querySelectorAll('.ebay-tab').forEach(tab => {
+            const active = tab === button;
 
-        tab.classList.toggle('active', active);
-        tab.setAttribute('aria-pressed', String(active));
+            tab.classList.toggle('active', active);
+            tab.setAttribute('aria-pressed', String(active));
+        });
+
+        panels.forEach(panel => {
+            const active = panel === target;
+
+            panel.hidden = !active;
+            panel.classList.toggle('active', active);
+        });
     });
 
-    panels.forEach(panel => {
-        const active = panel === target;
+    document.querySelectorAll('[data-tcs-ebay-auction-pending]').forEach(placeholder => {
+        const { category, url, nonce } = placeholder.dataset;
+        const loadingMarkup = placeholder.innerHTML;
+        const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-        panel.hidden = !active;
-        panel.classList.toggle('active', active);
-    });
-});
-
-document.querySelectorAll('[data-tcs-ebay-auction-pending]').forEach(placeholder => {
-    const { category, url, nonce } = placeholder.dataset;
-    const loadingMarkup = placeholder.innerHTML;
-    const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
-
-    async function poll() {
-        for (let attempt = 0; attempt < 20; attempt++) {
-            await delay(3000);
-
-            if (!placeholder.isConnected) return;
-
-            try {
-                const response = await fetch(url, {
-                    method: 'POST',
-                    credentials: 'same-origin',
-                    signal: AbortSignal.timeout(5000),
-                    body: new URLSearchParams({
-                        action: 'tcs_poll_ebay_auction_widget',
-                        category,
-                        nonce
-                    })
-                });
-
-                if (response.status === 403) {
-                    placeholder.textContent = 'The auction loading session expired.';
-                    return;
-                }
-
-                if (!response.ok) continue;
-
-                const result = await response.json();
-
-                if (result.success && result.data.pending === false) {
-                    placeholder.outerHTML = result.data.html;
-                    return;
-                }
-            } catch {
-                // Retry a timed-out or interrupted cache check.
-            }
-        }
-
-        if (!placeholder.isConnected) return;
-
-        placeholder.textContent = 'eBay listings are taking longer than expected. ';
-
-        const retry = document.createElement('button');
-        retry.type = 'button';
-        retry.textContent = 'Check again';
-
-        retry.addEventListener('click', () => {
-            placeholder.innerHTML = loadingMarkup;
-            poll();
-        }, { once: true });
-
-        placeholder.append(retry);
-    }
-
-    poll();
-});
-
-document.querySelectorAll('[data-tcs-ebay-top-items-pending]').forEach(placeholder => {
-    const { postId, limit, type, url, nonce } = placeholder.dataset;
-    const loadingMarkup = placeholder.innerHTML;
-    const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
-
-    async function poll() {
-        for (let attempt = 0; attempt < 20; attempt++) {
-            if (attempt > 0) {
+        async function poll() {
+            for (let attempt = 0; attempt < 20; attempt++) {
                 await delay(3000);
-            }
-            if (!placeholder.isConnected) return;
 
-            try {
-                const response = await fetch(url, {
-                    method: 'POST',
-                    credentials: 'same-origin',
-                    signal: AbortSignal.timeout(5000),
-                    body: new URLSearchParams({
-                        action: 'tcs_poll_ebay_top_items',
-                        post_id: postId,
-                        limit,
-                        type,
-                        nonce
-                    })
-                });
+                if (!placeholder.isConnected) return;
 
-                if (response.status === 403) {
-                    placeholder.textContent = 'The auction loading session expired.';
-                    return;
-                }
+                try {
+                    const response = await fetch(url, {
+                        method: 'POST',
+                        credentials: 'same-origin',
+                        signal: AbortSignal.timeout(5000),
+                        body: new URLSearchParams({
+                            action: 'tcs_poll_ebay_auction_widget',
+                            category,
+                            nonce
+                        })
+                    });
 
-                if (!response.ok) continue;
-
-                const result = await response.json();
-
-                if (
-                    result.success === true &&
-                    typeof result.data?.html === 'string' &&
-                    result.data.html.trim() !== ''
-                ) {
-                    const template = document.createElement('template');
-                    template.innerHTML = result.data.html.trim();
-                
-                    const replacement = template.content.firstElementChild;
-                
-                    if (!replacement) continue;
-                
-                    const nextPlaceholder = replacement.matches(
-                        '[data-tcs-ebay-top-items-pending]'
-                    )
-                        ? replacement
-                        : replacement.querySelector(
-                            '[data-tcs-ebay-top-items-pending]'
-                        );
-                
-                    // A pending response must retain a loading placeholder.
-                    if (result.data.pending && !nextPlaceholder) {
-                        continue;
-                    }
-                
-                    const target = placeholder.closest(
-                        '[data-tcs-ebay-top-items-loading]'
-                    ) || placeholder;
-                
-                    target.replaceWith(replacement);
-                
-                    if (result.data.pending === false) {
+                    if (response.status === 403) {
+                        placeholder.textContent = 'The auction loading session expired.';
                         return;
                     }
-                
-                    // Continue polling the newly rendered placeholder.
-                    placeholder = nextPlaceholder;
+
+                    if (!response.ok) continue;
+
+                    const result = await response.json();
+
+                    if (result.success && result.data.pending === false) {
+                        placeholder.outerHTML = result.data.html;
+                        return;
+                    }
+                } catch {
+                    // Retry a timed-out or interrupted cache check.
                 }
-            } catch {
-                // Continue checking after a connection error or timeout.
             }
+
+            if (!placeholder.isConnected) return;
+
+            placeholder.textContent = 'eBay listings are taking longer than expected. ';
+
+            const retry = document.createElement('button');
+            retry.type = 'button';
+            retry.textContent = 'Check again';
+
+            retry.addEventListener('click', () => {
+                placeholder.innerHTML = loadingMarkup;
+                poll();
+            }, { once: true });
+
+            placeholder.append(retry);
         }
 
-        if (!placeholder.isConnected) return;
+        poll();
+    });
 
-        placeholder.textContent = 'eBay listings are taking longer than expected. ';
+    document.querySelectorAll('[data-tcs-ebay-top-items-pending]').forEach(placeholder => {
+        const { postId, limit, type, url, nonce } = placeholder.dataset;
+        const loadingMarkup = placeholder.innerHTML;
+        const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-        const retry = document.createElement('button');
-        retry.type = 'button';
-        retry.textContent = 'Check again';
+        async function poll() {
+            for (let attempt = 0; attempt < 20; attempt++) {
+                if (attempt > 0) {
+                    await delay(3000);
+                }
+                if (!placeholder.isConnected) return;
 
-        retry.addEventListener('click', () => {
-            placeholder.innerHTML = loadingMarkup;
-            poll();
-        }, { once: true });
+                try {
+                    const response = await fetch(url, {
+                        method: 'POST',
+                        credentials: 'same-origin',
+                        signal: AbortSignal.timeout(5000),
+                        body: new URLSearchParams({
+                            action: 'tcs_poll_ebay_top_items',
+                            post_id: postId,
+                            limit,
+                            type,
+                            nonce
+                        })
+                    });
 
-        placeholder.append(retry);
-    }
+                    if (response.status === 403) {
+                        placeholder.textContent = 'The auction loading session expired.';
+                        return;
+                    }
 
-    poll();
-});
+                    if (!response.ok) continue;
+
+                    const result = await response.json();
+
+                    if (
+                        result.success === true &&
+                        typeof result.data?.html === 'string' &&
+                        result.data.html.trim() !== ''
+                    ) {
+                        const template = document.createElement('template');
+                        template.innerHTML = result.data.html.trim();
+                    
+                        const replacement = template.content.firstElementChild;
+                    
+                        if (!replacement) continue;
+                    
+                        const nextPlaceholder = replacement.matches(
+                            '[data-tcs-ebay-top-items-pending]'
+                        )
+                            ? replacement
+                            : replacement.querySelector(
+                                '[data-tcs-ebay-top-items-pending]'
+                            );
+                    
+                        // A pending response must retain a loading placeholder.
+                        if (result.data.pending && !nextPlaceholder) {
+                            continue;
+                        }
+                    
+                        const target = placeholder.closest(
+                            '[data-tcs-ebay-top-items-loading]'
+                        ) || placeholder;
+                    
+                        if (!target.isConnected) return;
+
+                        const focused = document.activeElement;
+                        const focusedSection = target.contains(focused)
+                            ? focused.closest('[data-ebay-section]')
+                            : null;
+
+                        const oldSections = new Map(
+                            Array.from(target.querySelectorAll('[data-ebay-section]'), section => [
+                                section.dataset.ebaySection,
+                                section
+                            ])
+                        );
+
+                        let focusAfterUpdate = null;
+
+                        for (const section of replacement.querySelectorAll('[data-ebay-section]')) {
+                            const oldSection = oldSections.get(section.dataset.ebaySection);
+                            if (!oldSection) continue;
+
+                            const selectedKey = oldSection.querySelector(
+                                '[data-ebay-tab][aria-selected="true"]'
+                            )?.dataset.ebayTab;
+
+                            const tabs = Array.from(section.querySelectorAll('[data-ebay-tab]'));
+                            const selectedTab = tabs.find(tab => tab.dataset.ebayTab === selectedKey);
+
+                            if (selectedTab) activate(selectedTab);
+
+                            if (oldSection !== focusedSection) continue;
+
+                            const visiblePanel = section.querySelector('.tcs-ebay-panel:not([hidden])');
+
+                            if (focused.matches('[data-ebay-tab]')) {
+                                focusAfterUpdate = tabs.find(
+                                    tab => tab.dataset.ebayTab === focused.dataset.ebayTab
+                                );
+                            } else if (focused.matches('[role="tabpanel"]')) {
+                                focusAfterUpdate = visiblePanel;
+                            } else if (focused.matches('a[href]')) {
+                                focusAfterUpdate = Array.from(
+                                    visiblePanel?.querySelectorAll('a[href]') ?? []
+                                ).find(link =>
+                                    link.href === focused.href && link.className === focused.className
+                                );
+                            }
+
+                            // If a focused listing disappears, return focus to its tab.
+                            focusAfterUpdate ??= selectedTab;
+                        }
+
+                        target.replaceWith(replacement);
+                        focusAfterUpdate?.focus({ preventScroll: true });
+                    
+                        if (result.data.pending === false) {
+                            return;
+                        }
+                    
+                        // Continue polling the newly rendered placeholder.
+                        placeholder = nextPlaceholder;
+                    }
+                } catch {
+                    // Continue checking after a connection error or timeout.
+                }
+            }
+
+            if (!placeholder.isConnected) return;
+
+            placeholder.textContent = 'eBay listings are taking longer than expected. ';
+
+            const retry = document.createElement('button');
+            retry.type = 'button';
+            retry.textContent = 'Check again';
+
+            retry.addEventListener('click', () => {
+                placeholder.innerHTML = loadingMarkup;
+                poll();
+            }, { once: true });
+
+            placeholder.append(retry);
+        }
+
+        poll();
+    });
+})();
