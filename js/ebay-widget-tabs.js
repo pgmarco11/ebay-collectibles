@@ -153,7 +153,9 @@ document.querySelectorAll('[data-tcs-ebay-top-items-pending]').forEach(placehold
 
     async function poll() {
         for (let attempt = 0; attempt < 20; attempt++) {
-            await delay(3000);
+            if (attempt > 0) {
+                await delay(3000);
+            }
             if (!placeholder.isConnected) return;
 
             try {
@@ -179,12 +181,43 @@ document.querySelectorAll('[data-tcs-ebay-top-items-pending]').forEach(placehold
 
                 const result = await response.json();
 
-                if (result.success && result.data.pending === false) {
-                    const target = placeholder.closest('[data-tcs-ebay-top-items-loading]')
-                        || placeholder;
-
-                    target.outerHTML = result.data.html;
-                    return;
+                if (
+                    result.success === true &&
+                    typeof result.data?.html === 'string' &&
+                    result.data.html.trim() !== ''
+                ) {
+                    const template = document.createElement('template');
+                    template.innerHTML = result.data.html.trim();
+                
+                    const replacement = template.content.firstElementChild;
+                
+                    if (!replacement) continue;
+                
+                    const nextPlaceholder = replacement.matches(
+                        '[data-tcs-ebay-top-items-pending]'
+                    )
+                        ? replacement
+                        : replacement.querySelector(
+                            '[data-tcs-ebay-top-items-pending]'
+                        );
+                
+                    // A pending response must retain a loading placeholder.
+                    if (result.data.pending && !nextPlaceholder) {
+                        continue;
+                    }
+                
+                    const target = placeholder.closest(
+                        '[data-tcs-ebay-top-items-loading]'
+                    ) || placeholder;
+                
+                    target.replaceWith(replacement);
+                
+                    if (result.data.pending === false) {
+                        return;
+                    }
+                
+                    // Continue polling the newly rendered placeholder.
+                    placeholder = nextPlaceholder;
                 }
             } catch {
                 // Continue checking after a connection error or timeout.

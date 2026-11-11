@@ -250,7 +250,18 @@ function tcs_top_items_categories($type, $post_id) {
         }
     }
 
-    return array_values($groups);
+    $groups = array_values($groups);
+    $charset = get_bloginfo('charset') ?: 'UTF-8';
+
+    usort($groups, static function (WP_Term $a, WP_Term $b) use ($charset): int {
+        $name_a = html_entity_decode($a->name, ENT_QUOTES, $charset);
+        $name_b = html_entity_decode($b->name, ENT_QUOTES, $charset);
+
+        return strnatcasecmp($name_a, $name_b)
+            ?: ($a->term_id <=> $b->term_id);
+    });
+
+    return $groups;
 }
 
 /*
@@ -363,7 +374,7 @@ function tcs_poll_ebay_top_items(): void {
     ], $post_id);
 
     wp_send_json_success([
-        'pending' => $html === '',
+        'pending' => !empty($GLOBALS['tcs_ebay_listings_pending']),
         'html' => $html,
     ]);
 }

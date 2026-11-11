@@ -511,12 +511,7 @@ class TCS_Ebay_Shortcodes {
             }
         }
 
-        $pending = !empty($GLOBALS['tcs_ebay_listings_pending']);
-
-        if ($pending && $poll_post_id !== null) {
-            return '';
-        }
-        
+        $pending = !empty($GLOBALS['tcs_ebay_listings_pending']);            
         $loading = '';
         
         if ($pending && $post_id > 0) {
