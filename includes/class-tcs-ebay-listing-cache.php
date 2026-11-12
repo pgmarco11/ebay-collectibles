@@ -26,37 +26,37 @@ class TCS_Ebay_Listing_Cache {
         $record = is_array($record) ? $record : [];
         $now = time();
 
-        $cooldown = max(
-            (int) get_option('tcs_ebay_api_cooldown_browse', 0),
-            (int) get_option('tcs_ebay_browse_cooldown', 0)
-        );
-        
         if (
             (int) ($record['refresh_after'] ?? 0) <= $now &&
-            $cooldown <= $now &&
             apply_filters('tcs_ebay_queue_listing_refresh', true)
         ) {
-            $args = [$type, $phrase, $limit, $keywords];
-
-            $owner = TCS_Ebay_API_Client::acquire_lock(
-                $key . '_queue',
-                10
-            );
-
-            if ($owner) {
-                try {
-                    if (!wp_next_scheduled('tcs_ebay_refresh_listings', $args)) {
-                        wp_schedule_single_event(
-                            $now,
-                            'tcs_ebay_refresh_listings',
-                            $args
-                        );
+            // Share the cooldown check across category reads in this request.
+            static $browse_cooldown = null;
+        
+            if ($browse_cooldown === null) {
+                $browse_cooldown = max(
+                    (int) get_option('tcs_ebay_api_cooldown_browse', 0),
+                    (int) get_option('tcs_ebay_browse_cooldown', 0)
+                );
+            }
+        
+            if ($browse_cooldown <= $now) {
+                $args = [$type, $phrase, $limit, $keywords];
+                $lock_key = $key . '_queue';
+                $owner = TCS_Ebay_API_Client::acquire_lock($lock_key, 10);
+        
+                if ($owner) {
+                    try {
+                        if (!wp_next_scheduled('tcs_ebay_refresh_listings', $args)) {
+                            wp_schedule_single_event(
+                                $now,
+                                'tcs_ebay_refresh_listings',
+                                $args
+                            );
+                        }
+                    } finally {
+                        TCS_Ebay_API_Client::release_lock($lock_key, $owner);
                     }
-                } finally {
-                    TCS_Ebay_API_Client::release_lock(
-                        $key . '_queue',
-                        $owner
-                    );
                 }
             }
         }
